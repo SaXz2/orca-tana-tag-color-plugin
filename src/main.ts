@@ -77,9 +77,10 @@ function debounceGetPanelBlockIds() {
   }
 
   debounceTimer = setTimeout(async () => {
-    // 直接执行，不进行快照比较
-    // 因为清除机制已经确保不会重复应用样式
-    await getAllPanelBlockIds();
+    // 使用 requestAnimationFrame 优化渲染，避免闪烁
+    requestAnimationFrame(async () => {
+      await getAllPanelBlockIds();
+    });
   }, 100); // 100ms 防抖延迟（降低延迟以提高响应速度）
 }
 
@@ -217,6 +218,14 @@ function applyBlockHandleColor(blockElement: Element, displayColor: string, bgCo
       handleElement.style.setProperty('opacity', '1', 'important');
     }
   }
+  
+  // 查找 .orca-repr-title 元素并设置颜色
+  const titleElement = blockElement.querySelector('.orca-repr-title');
+  
+  if (titleElement instanceof HTMLElement) {
+    // 设置标题前景颜色（与无序点使用相同的颜色规则）
+    titleElement.style.setProperty('color', displayColor, 'important');
+  }
 }
 
 /**
@@ -287,16 +296,14 @@ async function getBlockStyleProperties(blockId: number): Promise<{ colorValue: s
 }
 
 /**
- * 清除所有容器块的无序点样式
+ * 读取所有面板中的容器块 data-id，并筛选出带标签且启用了颜色的块
  */
-function clearAllBlockHandleStyles() {
-  debugLog("清除所有容器块的样式");
-  
-  // 遍历所有面板
+async function readAllPanelsContainerBlocks(viewPanels: any[]) {
+  // 先断开所有之前创建的 MutationObserver
   const panels = orca.state.panels;
-  const viewPanels = collectViewPanels(panels);
+  const allViewPanels = collectViewPanels(panels);
   
-  for (const panel of viewPanels) {
+  for (const panel of allViewPanels) {
     const panelId = panel.id;
     const panelElement = document.querySelector(`[data-panel-id="${panelId}"]`);
     
@@ -304,24 +311,8 @@ function clearAllBlockHandleStyles() {
       continue;
     }
     
-    // 查询所有容器块元素
     const containerElements = panelElement.querySelectorAll('.orca-block.orca-container');
-    
     containerElements.forEach((element) => {
-      // 查找无序点元素
-      const handleElement = element.querySelector('.orca-block-handle.ti.ti-point-filled');
-      
-      if (handleElement instanceof HTMLElement) {
-        // 清除之前应用的内联样式
-        handleElement.style.removeProperty('color');
-        handleElement.style.removeProperty('background-color');
-        handleElement.style.removeProperty('opacity');
-        
-        // 移除图标属性
-        handleElement.removeAttribute('data-icon');
-      }
-      
-      // 断开之前创建的 MutationObserver
       const existingObserver = (element as any).__colorObserver;
       if (existingObserver) {
         existingObserver.disconnect();
@@ -329,14 +320,6 @@ function clearAllBlockHandleStyles() {
       }
     });
   }
-}
-
-/**
- * 读取所有面板中的容器块 data-id，并筛选出带标签且启用了颜色的块
- */
-async function readAllPanelsContainerBlocks(viewPanels: any[]) {
-  // 先清除所有之前应用的样式
-  clearAllBlockHandleStyles();
   
   for (const panel of viewPanels) {
     const panelId = panel.id;
@@ -458,6 +441,24 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
       colorSource: 'block' | 'tag';
       domColor: string | null;
     } => item !== null);
+    
+    // 先清除当前面板的所有容器块样式
+    const allContainerElements = panelElement.querySelectorAll('.orca-block.orca-container');
+    allContainerElements.forEach((element) => {
+      const handleElement = element.querySelector('.orca-block-handle.ti.ti-point-filled');
+      if (handleElement instanceof HTMLElement) {
+        handleElement.style.removeProperty('color');
+        handleElement.style.removeProperty('background-color');
+        handleElement.style.removeProperty('opacity');
+        handleElement.removeAttribute('data-icon');
+      }
+      
+      // 清除标题元素的颜色
+      const titleElement = element.querySelector('.orca-repr-title');
+      if (titleElement instanceof HTMLElement) {
+        titleElement.style.removeProperty('color');
+      }
+    });
     
     // 只输出启用了颜色的容器块（包含块ID、标签名、别名块ID、颜色值、图标值和DOM颜色）
     if (taggedBlocks.length > 0) {
