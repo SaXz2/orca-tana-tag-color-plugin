@@ -1,7 +1,14 @@
 {
-  "name": "orca-plugin-template",
-  "version": "0.0.0",
+  "name": "orca-tana-tag-color-plugin",
+  "version": "1.0.0",
+  "description": "为 Orca Note 中带标签的块应用 Tana 风格的颜色和图标样式",
   "type": "module",
+  "author": "SaXz2",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SaXz2/orca-tana-tag-color-plugin.git"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
