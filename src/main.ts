@@ -87,15 +87,15 @@ async function getAllPanelBlockIds() {
 }
 
 /**
- * 获取别名块的 _color 和 _icon 属性值
- * @returns { colorValue: string | null, iconValue: string | null } 或 null（如果颜色未启用）
+ * 获取块的 _color 和 _icon 属性值
+ * @returns { colorValue: string | null, iconValue: string | null, colorEnabled: boolean }
  */
-async function getTagStyleProperties(aliasBlockId: number): Promise<{ colorValue: string | null; iconValue: string | null } | null> {
+async function getBlockStyleProperties(blockId: number): Promise<{ colorValue: string | null; iconValue: string | null; colorEnabled: boolean }> {
   try {
-    const block = await orca.invokeBackend("get-block", aliasBlockId);
+    const block = await orca.invokeBackend("get-block", blockId);
     
     if (!block || !block.properties || !Array.isArray(block.properties)) {
-      return null;
+      return { colorValue: null, iconValue: null, colorEnabled: false };
     }
     
     // 查找 name="_color" 的属性
@@ -103,27 +103,21 @@ async function getTagStyleProperties(aliasBlockId: number): Promise<{ colorValue
       (prop: any) => prop.name === "_color"
     );
     
-    // 如果没有找到 _color 属性，返回 null
-    if (!colorProperty) {
-      return null;
-    }
-    
-    // 检查 type 是否等于 1（开启状态）
-    if (colorProperty.type !== 1) {
-      return null; // type 不等于 1，说明是关闭状态
-    }
-    
     // 查找 name="_icon" 的属性
     const iconProperty = block.properties.find(
       (prop: any) => prop.name === "_icon"
     );
     
+    // 检查颜色是否启用（type === 1）
+    const colorEnabled = colorProperty && colorProperty.type === 1;
+    
     return {
-      colorValue: colorProperty.value || null,
-      iconValue: iconProperty?.value || null
+      colorValue: colorEnabled ? (colorProperty.value || null) : null,
+      iconValue: iconProperty?.value || null,
+      colorEnabled: !!colorEnabled
     };
   } catch (error) {
-    return null;
+    return { colorValue: null, iconValue: null, colorEnabled: false };
   }
 }
 
@@ -145,7 +139,15 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
     const containerElements = panelElement.querySelectorAll('.orca-block.orca-container');
     
     // 筛选出带标签的容器块，并获取第一个标签名
-    const taggedBlocksPromises: Promise<{ blockId: string; firstTag: string; aliasBlockId: number; colorValue: string | null; iconValue: string | null } | null>[] = [];
+    const taggedBlocksPromises: Promise<{ 
+      blockId: string; 
+      firstTag: string; 
+      aliasBlockId: number; 
+      colorValue: string | null; 
+      iconValue: string | null;
+      colorSource: 'block' | 'tag'; // 标记颜色来源
+      domColor: string; // DOM 上标签的实际颜色
+    } | null>[] = [];
     
     containerElements.forEach((element) => {
       // 查找该容器块下的 .orca-repr-main 元素
@@ -163,10 +165,36 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
             const dataId = element.getAttribute('data-id');
             const firstTagName = firstTagElement.getAttribute('data-name');
             
+            // 读取 DOM 上标签的实际颜色样式
+            const computedStyle = window.getComputedStyle(firstTagElement);
+            const domColor = computedStyle.color;
+            
             if (dataId && firstTagName) {
-              // 异步获取别名块ID并检查颜色和图标属性
+              // 异步获取块本身和标签的颜色属性
               const promise = (async () => {
                 try {
+                  const blockIdNum = parseInt(dataId, 10);
+                  
+                  // 1. 首先检查容器块本身的颜色（最高优先级）
+                  const blockStyleProps = await getBlockStyleProperties(blockIdNum);
+                  
+                  // 如果容器块本身启用了颜色，直接使用
+                  if (blockStyleProps.colorEnabled) {
+                    // 仍然需要获取标签的别名块ID用于记录
+                    const result = await orca.invokeBackend("get-blockid-by-alias", firstTagName);
+                    const aliasBlockId = result?.id ?? null;
+                    
+                    return {
+                      blockId: dataId,
+                      firstTag: firstTagName,
+                      aliasBlockId: aliasBlockId || 0,
+                      colorValue: blockStyleProps.colorValue,
+                      iconValue: blockStyleProps.iconValue,
+                      colorSource: 'block' as const
+                    };
+                  }
+                  
+                  // 2. 如果容器块没有启用颜色，使用标签的颜色
                   const result = await orca.invokeBackend("get-blockid-by-alias", firstTagName);
                   const aliasBlockId = result?.id ?? null;
                   
@@ -174,19 +202,20 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
                     return null; // 没有找到别名块，跳过
                   }
                   
-                  // 获取颜色和图标属性
-                  const styleProperties = await getTagStyleProperties(aliasBlockId);
+                  // 获取标签的颜色和图标属性
+                  const tagStyleProps = await getBlockStyleProperties(aliasBlockId);
                   
-                  if (!styleProperties) {
-                    return null; // 未启用颜色或没有颜色值，跳过
+                  if (!tagStyleProps.colorEnabled) {
+                    return null; // 标签也未启用颜色，跳过
                   }
                   
                   return {
                     blockId: dataId,
                     firstTag: firstTagName,
                     aliasBlockId: aliasBlockId,
-                    colorValue: styleProperties.colorValue,
-                    iconValue: styleProperties.iconValue
+                    colorValue: tagStyleProps.colorValue,
+                    iconValue: tagStyleProps.iconValue,
+                    colorSource: 'tag' as const
                   };
                 } catch (error) {
                   return null;
@@ -204,7 +233,14 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
     const allResults = await Promise.all(taggedBlocksPromises);
     
     // 过滤掉 null 值（未启用颜色的块）
-    const taggedBlocks = allResults.filter((item): item is { blockId: string; firstTag: string; aliasBlockId: number; colorValue: string | null; iconValue: string | null } => item !== null);
+    const taggedBlocks = allResults.filter((item): item is { 
+      blockId: string; 
+      firstTag: string; 
+      aliasBlockId: number; 
+      colorValue: string | null; 
+      iconValue: string | null;
+      colorSource: 'block' | 'tag';
+    } => item !== null);
     
     // 只输出启用了颜色的容器块（包含块ID、标签名、别名块ID、颜色值和图标值）
     if (taggedBlocks.length > 0) {
