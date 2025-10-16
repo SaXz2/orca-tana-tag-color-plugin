@@ -106,23 +106,30 @@ function hexToRgba(hex: string, alpha: number): string {
 }
 
 /**
- * 为容器块的无序点应用颜色样式
+ * 为容器块的无序点应用颜色样式和图标
  */
-function applyBlockHandleColor(blockElement: Element, colorValue: string) {
+function applyBlockHandleColor(blockElement: Element, colorValue: string, iconValue: string | null) {
   // 查找 .orca-block-handle.ti.ti-point-filled 元素
   const handleElement = blockElement.querySelector('.orca-block-handle.ti.ti-point-filled');
   
   if (handleElement instanceof HTMLElement) {
     // 设置无序点颜色
-    handleElement.style.color = colorValue;
+    handleElement.style.setProperty('color', colorValue, 'important');
+    
+    // 设置图标属性
+    if (iconValue) {
+      handleElement.setAttribute('data-icon', iconValue);
+    } else {
+      handleElement.removeAttribute('data-icon');
+    }
     
     // 如果有 orca-block-handle-collapsed 类，设置背景颜色（透明度 0.45）
     if (handleElement.classList.contains('orca-block-handle-collapsed')) {
       const bgColor = hexToRgba(colorValue, 0.45);
-      handleElement.style.backgroundColor = bgColor;
+      handleElement.style.setProperty('background-color', bgColor, 'important');
     } else {
       // 没有折叠类时，清除背景颜色
-      handleElement.style.backgroundColor = '';
+      handleElement.style.removeProperty('background-color');
     }
   }
 }
@@ -130,7 +137,7 @@ function applyBlockHandleColor(blockElement: Element, colorValue: string) {
 /**
  * 监听块的折叠/展开状态变化
  */
-function observeBlockHandleCollapse(blockElement: Element, colorValue: string) {
+function observeBlockHandleCollapse(blockElement: Element, colorValue: string, iconValue: string | null) {
   const handleElement = blockElement.querySelector('.orca-block-handle.ti.ti-point-filled');
   if (!handleElement) return;
   
@@ -142,8 +149,8 @@ function observeBlockHandleCollapse(blockElement: Element, colorValue: string) {
   
   // 创建 MutationObserver 监听 class 变化
   const observer = new MutationObserver(() => {
-    // 重新应用颜色样式
-    applyBlockHandleColor(blockElement, colorValue);
+    // 重新应用颜色样式和图标
+    applyBlockHandleColor(blockElement, colorValue, iconValue);
   });
   
   // 开始观察 class 属性变化
@@ -245,7 +252,7 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
                 try {
                   const blockIdNum = parseInt(dataId, 10);
                   
-                  // 获取标签的别名块ID（无论如何都需要）
+                  // 1. 首先获取标签的别名块ID（因为图标总是从标签读取）
                   const result = await orca.invokeBackend("get-blockid-by-alias", firstTagName);
                   const aliasBlockId = result?.id ?? null;
                   
@@ -253,44 +260,40 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
                     return null; // 没有找到别名块，跳过
                   }
                   
-                  // 1. 首先检查容器块本身的颜色（最高优先级）
+                  // 2. 获取标签的属性（用于读取图标，可能还需要读取颜色）
+                  const tagStyleProps = await getBlockStyleProperties(aliasBlockId);
+                  
+                  // 3. 检查容器块本身是否启用了颜色且有值（最高优先级）
                   const blockStyleProps = await getBlockStyleProperties(blockIdNum);
                   
-                  // 如果容器块本身启用了颜色（type=1），使用容器块的颜色
-                  if (blockStyleProps.colorEnabled) {
-                    // iconValue 总是从标签读取
-                    const tagProps = await getBlockStyleProperties(aliasBlockId);
-                    
-                    // 如果 colorValue 是 null，domColor 也设为 null
-                    const finalDomColor = blockStyleProps.colorValue ? domColor : null;
+                  // 如果容器块本身启用了颜色且有值，使用容器块的颜色 + 标签的图标
+                  if (blockStyleProps.colorEnabled && blockStyleProps.colorValue) {
+                    const finalDomColor = domColor;
                     
                     return {
                       blockId: dataId,
                       firstTag: firstTagName,
                       aliasBlockId: aliasBlockId,
                       colorValue: blockStyleProps.colorValue,
-                      iconValue: tagProps.iconValue, // 使用标签的 icon
+                      iconValue: tagStyleProps.iconValue, // 图标从标签读取
                       colorSource: 'block' as const,
                       domColor: finalDomColor
                     };
                   }
                   
-                  // 2. 如果容器块的 _color type 不等于 1（未启用或不存在），使用标签的颜色
-                  const tagStyleProps = await getBlockStyleProperties(aliasBlockId);
-                  
-                  if (!tagStyleProps.colorEnabled) {
-                    return null; // 标签也未启用颜色，跳过
+                  // 4. 如果容器块没有颜色值（未启用或值为null），使用标签的颜色 + 标签的图标
+                  if (!tagStyleProps.colorEnabled || !tagStyleProps.colorValue) {
+                    return null; // 标签也未启用颜色或没有颜色值，跳过
                   }
                   
-                  // 如果 colorValue 是 null，domColor 也设为 null
-                  const finalDomColor = tagStyleProps.colorValue ? domColor : null;
+                  const finalDomColor = domColor;
                   
                   return {
                     blockId: dataId,
                     firstTag: firstTagName,
                     aliasBlockId: aliasBlockId,
                     colorValue: tagStyleProps.colorValue,
-                    iconValue: tagStyleProps.iconValue,
+                    iconValue: tagStyleProps.iconValue, // 图标从标签读取
                     colorSource: 'tag' as const,
                     domColor: finalDomColor
                   };
@@ -327,14 +330,17 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
       // 为每个启用颜色的块应用样式
       taggedBlocks.forEach(block => {
         if (block.colorValue) {
-          const blockElement = panelElement.querySelector(`[data-id="${block.blockId}"]`);
-          if (blockElement) {
-            // 应用无序点颜色样式
-            applyBlockHandleColor(blockElement, block.colorValue);
+          // 使用 querySelectorAll 获取所有匹配的元素（处理重复 ID 的情况）
+          const blockElements = panelElement.querySelectorAll(`[data-id="${block.blockId}"]`);
+          const colorValue = block.colorValue; // 提取出来确保类型为 string
+          const iconValue = block.iconValue; // 提取图标值
+          blockElements.forEach(blockElement => {
+            // 应用无序点颜色样式和图标
+            applyBlockHandleColor(blockElement, colorValue, iconValue);
             
             // 监听折叠/展开状态变化
-            observeBlockHandleCollapse(blockElement, block.colorValue);
-          }
+            observeBlockHandleCollapse(blockElement, colorValue, iconValue);
+          });
         }
       });
     }
