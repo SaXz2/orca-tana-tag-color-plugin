@@ -146,7 +146,7 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
       colorValue: string | null; 
       iconValue: string | null;
       colorSource: 'block' | 'tag'; // 标记颜色来源
-      domColor: string; // DOM 上标签的实际颜色
+      domColor: string | null; // DOM 上标签的实际颜色（如果 colorValue 为 null 则为 null）
     } | null>[] = [];
     
     containerElements.forEach((element) => {
@@ -184,13 +184,17 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
                     const result = await orca.invokeBackend("get-blockid-by-alias", firstTagName);
                     const aliasBlockId = result?.id ?? null;
                     
+                    // 如果 colorValue 是 null，domColor 也设为 null
+                    const finalDomColor = blockStyleProps.colorValue ? domColor : null;
+                    
                     return {
                       blockId: dataId,
                       firstTag: firstTagName,
                       aliasBlockId: aliasBlockId || 0,
                       colorValue: blockStyleProps.colorValue,
                       iconValue: blockStyleProps.iconValue,
-                      colorSource: 'block' as const
+                      colorSource: 'block' as const,
+                      domColor: finalDomColor
                     };
                   }
                   
@@ -209,13 +213,17 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
                     return null; // 标签也未启用颜色，跳过
                   }
                   
+                  // 如果 colorValue 是 null，domColor 也设为 null
+                  const finalDomColor = tagStyleProps.colorValue ? domColor : null;
+                  
                   return {
                     blockId: dataId,
                     firstTag: firstTagName,
                     aliasBlockId: aliasBlockId,
                     colorValue: tagStyleProps.colorValue,
                     iconValue: tagStyleProps.iconValue,
-                    colorSource: 'tag' as const
+                    colorSource: 'tag' as const,
+                    domColor: finalDomColor
                   };
                 } catch (error) {
                   return null;
@@ -240,9 +248,10 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
       colorValue: string | null; 
       iconValue: string | null;
       colorSource: 'block' | 'tag';
+      domColor: string | null;
     } => item !== null);
     
-    // 只输出启用了颜色的容器块（包含块ID、标签名、别名块ID、颜色值和图标值）
+    // 只输出启用了颜色的容器块（包含块ID、标签名、别名块ID、颜色值、图标值和DOM颜色）
     if (taggedBlocks.length > 0) {
       console.log(`当前面板 [${panelId}] 的启用颜色的容器块:`, taggedBlocks);
     }
