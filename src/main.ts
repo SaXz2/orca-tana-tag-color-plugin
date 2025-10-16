@@ -87,6 +87,76 @@ async function getAllPanelBlockIds() {
 }
 
 /**
+ * 将十六进制颜色转换为带透明度的 rgba 格式
+ */
+function hexToRgba(hex: string, alpha: number): string {
+  // 移除 # 符号
+  hex = hex.replace('#', '');
+  
+  // 处理简写格式 (如 #fff)
+  if (hex.length === 3) {
+    hex = hex.split('').map(char => char + char).join('');
+  }
+  
+  const r = parseInt(hex.substring(0, 2), 16);
+  const g = parseInt(hex.substring(2, 4), 16);
+  const b = parseInt(hex.substring(4, 6), 16);
+  
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+/**
+ * 为容器块的无序点应用颜色样式
+ */
+function applyBlockHandleColor(blockElement: Element, colorValue: string) {
+  // 查找 .orca-block-handle.ti.ti-point-filled 元素
+  const handleElement = blockElement.querySelector('.orca-block-handle.ti.ti-point-filled');
+  
+  if (handleElement instanceof HTMLElement) {
+    // 设置无序点颜色
+    handleElement.style.color = colorValue;
+    
+    // 如果有 orca-block-handle-collapsed 类，设置背景颜色（透明度 0.45）
+    if (handleElement.classList.contains('orca-block-handle-collapsed')) {
+      const bgColor = hexToRgba(colorValue, 0.45);
+      handleElement.style.backgroundColor = bgColor;
+    } else {
+      // 没有折叠类时，清除背景颜色
+      handleElement.style.backgroundColor = '';
+    }
+  }
+}
+
+/**
+ * 监听块的折叠/展开状态变化
+ */
+function observeBlockHandleCollapse(blockElement: Element, colorValue: string) {
+  const handleElement = blockElement.querySelector('.orca-block-handle.ti.ti-point-filled');
+  if (!handleElement) return;
+  
+  // 如果已经有观察器，先断开
+  const existingObserver = (handleElement as any).__colorObserver;
+  if (existingObserver) {
+    existingObserver.disconnect();
+  }
+  
+  // 创建 MutationObserver 监听 class 变化
+  const observer = new MutationObserver(() => {
+    // 重新应用颜色样式
+    applyBlockHandleColor(blockElement, colorValue);
+  });
+  
+  // 开始观察 class 属性变化
+  observer.observe(handleElement, {
+    attributes: true,
+    attributeFilter: ['class']
+  });
+  
+  // 将 observer 存储在元素上
+  (handleElement as any).__colorObserver = observer;
+}
+
+/**
  * 获取块的 _color 和 _icon 属性值
  * @returns { colorValue: string | null, iconValue: string | null, colorEnabled: boolean }
  */
@@ -254,6 +324,20 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
     // 只输出启用了颜色的容器块（包含块ID、标签名、别名块ID、颜色值、图标值和DOM颜色）
     if (taggedBlocks.length > 0) {
       console.log(`当前面板 [${panelId}] 的启用颜色的容器块:`, taggedBlocks);
+      
+      // 为每个启用颜色的块应用样式
+      taggedBlocks.forEach(block => {
+        if (block.colorValue) {
+          const blockElement = panelElement.querySelector(`[data-id="${block.blockId}"]`);
+          if (blockElement) {
+            // 应用无序点颜色样式
+            applyBlockHandleColor(blockElement, block.colorValue);
+            
+            // 监听折叠/展开状态变化
+            observeBlockHandleCollapse(blockElement, block.colorValue);
+          }
+        }
+      });
     }
   }
 }
