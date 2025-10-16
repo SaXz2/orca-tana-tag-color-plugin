@@ -6,6 +6,12 @@ let unsubscribe: (() => void) | null = null;
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let lastPanelsSnapshot: string = "";
 
+// 初始化重试相关变量
+let retryCount: number = 0;
+const MAX_RETRY_COUNT = 3; // 最大重试次数
+const RETRY_DELAY = 500; // 重试延迟（毫秒）
+const INITIAL_DELAY = 500; // 初始延迟（毫秒）
+
 // 定义设置 schema
 const settingsSchema = {
   useDomColor: {
@@ -126,6 +132,49 @@ async function getAllPanelBlockIds() {
 }
 
 /**
+ * 检查DOM是否准备好
+ * @returns 是否有至少一个面板的DOM元素存在
+ */
+function isDOMReady(): boolean {
+  const panels = orca.state.panels;
+  const viewPanels = collectViewPanels(panels);
+  
+  // 检查是否至少有一个面板的DOM元素存在
+  for (const panel of viewPanels) {
+    const panelElement = document.querySelector(`[data-panel-id="${panel.id}"]`);
+    if (panelElement) {
+      return true;
+    }
+  }
+  
+  return false;
+}
+
+/**
+ * 带重试的初始化函数
+ */
+async function initializeWithRetry() {
+  debugLog(`初始化尝试 ${retryCount + 1}/${MAX_RETRY_COUNT + 1}`);
+  
+  // 检查DOM是否准备好
+  if (isDOMReady()) {
+    debugLog("DOM已准备好，开始应用颜色");
+    retryCount = 0; // 重置重试计数
+    await getAllPanelBlockIds();
+  } else {
+    // DOM未准备好，检查是否需要重试
+    if (retryCount < MAX_RETRY_COUNT) {
+      retryCount++;
+      debugLog(`DOM未准备好，将在 ${RETRY_DELAY}ms 后重试`);
+      setTimeout(() => initializeWithRetry(), RETRY_DELAY);
+    } else {
+      debugError(`DOM未准备好，已达到最大重试次数 (${MAX_RETRY_COUNT})`);
+      retryCount = 0; // 重置重试计数
+    }
+  }
+}
+
+/**
  * 将十六进制颜色转换为带透明度的 rgba 格式
  */
 function hexToRgba(hex: string, alpha: number): string {
@@ -173,6 +222,8 @@ function applyBlockHandleColor(blockElement: Element, displayColor: string, bgCo
     } else {
       // 没有折叠类时，清除背景颜色
       handleElement.style.removeProperty('background-color');
+      // 确保非折叠状态下完全不透明
+      handleElement.style.setProperty('opacity', '1', 'important');
     }
   }
 }
@@ -417,6 +468,9 @@ export async function load(_name: string) {
 
   setupL10N(orca.state.locale, { "zh-CN": zhCN });
 
+  // 注入CSS样式
+  orca.themes.injectCSSResource("styles.css", `${pluginName}-styles`);
+
   // 注册设置 schema
   await orca.plugins.setSettingsSchema(pluginName, settingsSchema);
 
@@ -429,13 +483,16 @@ export async function load(_name: string) {
     "获取所有面板的块ID"
   );
 
-  // 插件加载时自动执行一次
+  // 初始化面板快照
   const settings = orca.state.plugins[pluginName]?.settings;
   lastPanelsSnapshot = JSON.stringify({
     panels: orca.state.panels,
     useDomColor: settings?.useDomColor ?? false,
   });
-  await getAllPanelBlockIds();
+
+  // 插件加载时延迟执行初始化（给DOM渲染留出时间）
+  debugLog(`将在 ${INITIAL_DELAY}ms 后开始初始化`);
+  setTimeout(() => initializeWithRetry(), INITIAL_DELAY);
 
   // 监听面板变化和设置变化
   if (window.Valtio?.subscribe) {
@@ -447,6 +504,9 @@ export async function load(_name: string) {
 }
 
 export async function unload() {
+  // 移除注入的CSS样式
+  orca.themes.removeCSSResources(`${pluginName}-styles`);
+  
   // 清理防抖定时器
   if (debounceTimer) {
     clearTimeout(debounceTimer);
