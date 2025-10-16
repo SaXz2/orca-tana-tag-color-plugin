@@ -21,6 +21,9 @@ jobs:
         with:
           node-version: '18'
       
+      - name: Remove platform-specific lock file
+        run: rm -f package-lock.json
+      
       - name: Install dependencies
         run: npm install
       
