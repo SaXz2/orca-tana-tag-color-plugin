@@ -6,6 +6,40 @@ let unsubscribe: (() => void) | null = null;
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let lastPanelsSnapshot: string = "";
 
+// 定义设置 schema
+const settingsSchema = {
+  useDomColor: {
+    label: "使用 DOM 颜色",
+    type: "boolean" as const,
+    defaultValue: false,
+  },
+  debugMode: {
+    label: "调试模式",
+    type: "boolean" as const,
+    defaultValue: false,
+  },
+};
+
+/**
+ * 调试日志辅助函数
+ */
+function debugLog(...args: any[]) {
+  const settings = orca.state.plugins[pluginName]?.settings;
+  if (settings?.debugMode) {
+    console.log('[Tana Tag Color Plugin]', ...args);
+  }
+}
+
+/**
+ * 调试错误日志辅助函数
+ */
+function debugError(...args: any[]) {
+  const settings = orca.state.plugins[pluginName]?.settings;
+  if (settings?.debugMode) {
+    console.error('[Tana Tag Color Plugin]', ...args);
+  }
+}
+
 /**
  * 递归遍历面板结构，收集所有 ViewPanel
  */
@@ -36,10 +70,15 @@ function debounceGetPanelBlockIds() {
   if (debounceTimer) {
     clearTimeout(debounceTimer);
   }
-  
+
   debounceTimer = setTimeout(async () => {
-    // 检查面板是否真的变化了
-    const currentSnapshot = JSON.stringify(orca.state.panels);
+    // 检查面板或设置是否真的变化了
+    const settings = orca.state.plugins[pluginName]?.settings;
+    const currentSnapshot = JSON.stringify({
+      panels: orca.state.panels,
+      useDomColor: settings?.useDomColor ?? false,
+    });
+    
     if (currentSnapshot !== lastPanelsSnapshot) {
       lastPanelsSnapshot = currentSnapshot;
       await getAllPanelBlockIds();
@@ -74,14 +113,14 @@ async function getAllPanelBlockIds() {
         }
       }
     } catch (error) {
-      console.error(`获取面板块ID失败:`, error);
+      debugError(`获取面板块ID失败:`, error);
     }
   }
   
-  console.log("所有面板的块ID:", blockIds);
-  
-  // 读取所有面板的容器块元素
-  await readAllPanelsContainerBlocks(viewPanels);
+    debugLog("所有面板的块ID:", blockIds);
+
+    // 读取所有面板的容器块元素
+    await readAllPanelsContainerBlocks(viewPanels);
   
   return blockIds;
 }
@@ -107,14 +146,18 @@ function hexToRgba(hex: string, alpha: number): string {
 
 /**
  * 为容器块的无序点应用颜色样式和图标
+ * @param blockElement 容器块元素
+ * @param displayColor 显示颜色（用于 color 属性）
+ * @param bgColorValue 背景颜色基础值（用于 background-color 属性）
+ * @param iconValue 图标值
  */
-function applyBlockHandleColor(blockElement: Element, colorValue: string, iconValue: string | null) {
+function applyBlockHandleColor(blockElement: Element, displayColor: string, bgColorValue: string, iconValue: string | null) {
   // 查找 .orca-block-handle.ti.ti-point-filled 元素
   const handleElement = blockElement.querySelector('.orca-block-handle.ti.ti-point-filled');
   
   if (handleElement instanceof HTMLElement) {
-    // 设置无序点颜色
-    handleElement.style.setProperty('color', colorValue, 'important');
+    // 设置无序点前景颜色（可能是 domColor 或 colorValue）
+    handleElement.style.setProperty('color', displayColor, 'important');
     
     // 设置图标属性
     if (iconValue) {
@@ -123,9 +166,9 @@ function applyBlockHandleColor(blockElement: Element, colorValue: string, iconVa
       handleElement.removeAttribute('data-icon');
     }
     
-    // 如果有 orca-block-handle-collapsed 类，设置背景颜色（透明度 0.45）
+    // 如果有 orca-block-handle-collapsed 类，设置背景颜色（始终使用 colorValue，透明度 0.45）
     if (handleElement.classList.contains('orca-block-handle-collapsed')) {
-      const bgColor = hexToRgba(colorValue, 0.45);
+      const bgColor = hexToRgba(bgColorValue, 0.45);
       handleElement.style.setProperty('background-color', bgColor, 'important');
     } else {
       // 没有折叠类时，清除背景颜色
@@ -136,31 +179,34 @@ function applyBlockHandleColor(blockElement: Element, colorValue: string, iconVa
 
 /**
  * 监听块的折叠/展开状态变化
+ * @param blockElement 容器块元素
+ * @param displayColor 显示颜色（用于 color 属性）
+ * @param bgColorValue 背景颜色基础值（用于 background-color 属性）
+ * @param iconValue 图标值
  */
-function observeBlockHandleCollapse(blockElement: Element, colorValue: string, iconValue: string | null) {
-  const handleElement = blockElement.querySelector('.orca-block-handle.ti.ti-point-filled');
-  if (!handleElement) return;
-  
+function observeBlockHandleCollapse(blockElement: Element, displayColor: string, bgColorValue: string, iconValue: string | null) {
   // 如果已经有观察器，先断开
-  const existingObserver = (handleElement as any).__colorObserver;
+  const existingObserver = (blockElement as any).__colorObserver;
   if (existingObserver) {
     existingObserver.disconnect();
   }
   
-  // 创建 MutationObserver 监听 class 变化
+  // 创建 MutationObserver 监听整个容器块的变化
   const observer = new MutationObserver(() => {
-    // 重新应用颜色样式和图标
-    applyBlockHandleColor(blockElement, colorValue, iconValue);
+    // 重新应用颜色样式和图标（因为 DOM 可能已经重新渲染）
+    applyBlockHandleColor(blockElement, displayColor, bgColorValue, iconValue);
   });
   
-  // 开始观察 class 属性变化
-  observer.observe(handleElement, {
+  // 监听容器块的属性变化和子树变化
+  observer.observe(blockElement, {
     attributes: true,
-    attributeFilter: ['class']
+    attributeFilter: ['class'],
+    subtree: true, // 监听所有子元素
+    childList: true // 监听子元素的添加/删除
   });
   
-  // 将 observer 存储在元素上
-  (handleElement as any).__colorObserver = observer;
+  // 将 observer 存储在容器元素上
+  (blockElement as any).__colorObserver = observer;
 }
 
 /**
@@ -325,23 +371,42 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
     
     // 只输出启用了颜色的容器块（包含块ID、标签名、别名块ID、颜色值、图标值和DOM颜色）
     if (taggedBlocks.length > 0) {
-      console.log(`当前面板 [${panelId}] 的启用颜色的容器块:`, taggedBlocks);
+      debugLog(`当前面板 [${panelId}] 的启用颜色的容器块:`, taggedBlocks);
       
+      // 获取插件设置
+      const settings = orca.state.plugins[pluginName]?.settings;
+      const useDomColor = settings?.useDomColor ?? false;
+
       // 为每个启用颜色的块应用样式
       taggedBlocks.forEach(block => {
-        if (block.colorValue) {
-          // 使用 querySelectorAll 获取所有匹配的元素（处理重复 ID 的情况）
-          const blockElements = panelElement.querySelectorAll(`[data-id="${block.blockId}"]`);
-          const colorValue = block.colorValue; // 提取出来确保类型为 string
-          const iconValue = block.iconValue; // 提取图标值
-          blockElements.forEach(blockElement => {
-            // 应用无序点颜色样式和图标
-            applyBlockHandleColor(blockElement, colorValue, iconValue);
-            
-            // 监听折叠/展开状态变化
-            observeBlockHandleCollapse(blockElement, colorValue, iconValue);
-          });
+        // colorValue 必须存在（用于背景色）
+        if (!block.colorValue) {
+          return;
         }
+        
+        // 根据颜色来源和设置决定显示颜色（用于前景色）
+        let displayColor: string;
+        if (block.colorSource === 'block') {
+          // 如果颜色来自 block 自身，始终使用 colorValue（不受 useDomColor 影响）
+          displayColor = block.colorValue;
+        } else {
+          // 如果颜色来自 tag，根据 useDomColor 设置决定
+          displayColor = useDomColor ? (block.domColor || block.colorValue) : block.colorValue;
+        }
+        
+        const bgColorValue = block.colorValue; // 背景色始终使用 colorValue
+        const iconValue = block.iconValue; // 图标值
+        
+        // 使用 querySelectorAll 获取所有匹配的元素（处理重复 ID 的情况）
+        const blockElements = panelElement.querySelectorAll(`[data-id="${block.blockId}"]`);
+        
+        blockElements.forEach(blockElement => {
+          // 应用无序点颜色样式和图标
+          applyBlockHandleColor(blockElement, displayColor, bgColorValue, iconValue);
+          
+          // 监听折叠/展开状态变化
+          observeBlockHandleCollapse(blockElement, displayColor, bgColorValue, iconValue);
+        });
       });
     }
   }
@@ -351,6 +416,9 @@ export async function load(_name: string) {
   pluginName = _name;
 
   setupL10N(orca.state.locale, { "zh-CN": zhCN });
+
+  // 注册设置 schema
+  await orca.plugins.setSettingsSchema(pluginName, settingsSchema);
 
   // 注册命令：获取所有面板块ID
   orca.commands.registerCommand(
@@ -362,10 +430,14 @@ export async function load(_name: string) {
   );
 
   // 插件加载时自动执行一次
-  lastPanelsSnapshot = JSON.stringify(orca.state.panels);
+  const settings = orca.state.plugins[pluginName]?.settings;
+  lastPanelsSnapshot = JSON.stringify({
+    panels: orca.state.panels,
+    useDomColor: settings?.useDomColor ?? false,
+  });
   await getAllPanelBlockIds();
 
-  // 监听面板变化
+  // 监听面板变化和设置变化
   if (window.Valtio?.subscribe) {
     unsubscribe = window.Valtio.subscribe(orca.state, () => {
       // 使用防抖函数，避免频繁触发
