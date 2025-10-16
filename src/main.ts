@@ -245,30 +245,7 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
                 try {
                   const blockIdNum = parseInt(dataId, 10);
                   
-                  // 1. 首先检查容器块本身的颜色（最高优先级）
-                  const blockStyleProps = await getBlockStyleProperties(blockIdNum);
-                  
-                  // 如果容器块本身启用了颜色，直接使用
-                  if (blockStyleProps.colorEnabled) {
-                    // 仍然需要获取标签的别名块ID用于记录
-                    const result = await orca.invokeBackend("get-blockid-by-alias", firstTagName);
-                    const aliasBlockId = result?.id ?? null;
-                    
-                    // 如果 colorValue 是 null，domColor 也设为 null
-                    const finalDomColor = blockStyleProps.colorValue ? domColor : null;
-                    
-                    return {
-                      blockId: dataId,
-                      firstTag: firstTagName,
-                      aliasBlockId: aliasBlockId || 0,
-                      colorValue: blockStyleProps.colorValue,
-                      iconValue: blockStyleProps.iconValue,
-                      colorSource: 'block' as const,
-                      domColor: finalDomColor
-                    };
-                  }
-                  
-                  // 2. 如果容器块没有启用颜色，使用标签的颜色
+                  // 获取标签的别名块ID（无论如何都需要）
                   const result = await orca.invokeBackend("get-blockid-by-alias", firstTagName);
                   const aliasBlockId = result?.id ?? null;
                   
@@ -276,7 +253,29 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
                     return null; // 没有找到别名块，跳过
                   }
                   
-                  // 获取标签的颜色和图标属性
+                  // 1. 首先检查容器块本身的颜色（最高优先级）
+                  const blockStyleProps = await getBlockStyleProperties(blockIdNum);
+                  
+                  // 如果容器块本身启用了颜色（type=1），使用容器块的颜色
+                  if (blockStyleProps.colorEnabled) {
+                    // iconValue 总是从标签读取
+                    const tagProps = await getBlockStyleProperties(aliasBlockId);
+                    
+                    // 如果 colorValue 是 null，domColor 也设为 null
+                    const finalDomColor = blockStyleProps.colorValue ? domColor : null;
+                    
+                    return {
+                      blockId: dataId,
+                      firstTag: firstTagName,
+                      aliasBlockId: aliasBlockId,
+                      colorValue: blockStyleProps.colorValue,
+                      iconValue: tagProps.iconValue, // 使用标签的 icon
+                      colorSource: 'block' as const,
+                      domColor: finalDomColor
+                    };
+                  }
+                  
+                  // 2. 如果容器块的 _color type 不等于 1（未启用或不存在），使用标签的颜色
                   const tagStyleProps = await getBlockStyleProperties(aliasBlockId);
                   
                   if (!tagStyleProps.colorEnabled) {
