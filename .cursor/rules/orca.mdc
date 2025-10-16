@@ -1,0 +1,13 @@
+---
+alwaysApply: true
+---
+
+When developing plugins for Orca Note, please adhere to the following conventions to ensure compatibility and maintainability:
+
+Avoid Reserved Names: Any name starting with an underscore (_) is reserved for system use. Plugin developers should not use such names for commands, renderers, settings, or any other identifiers.
+
+Use Unique Prefixes: To avoid conflicts with other plugins, always include a unique prefix related to your plugin in the names of commands, renderers, and other identifiers. For example, if your plugin is named myplugin, use a prefix like myplugin. for all identifiers (e.g., myplugin.commandName, myplugin.rendererName).
+
+Follow Naming Standards: Use descriptive and consistent naming conventions for all identifiers. This improves readability and helps other developers understand your code.
+
+Respect System Behavior: Do not override or interfere with system-level commands, renderers, or UI elements unless explicitly allowed by the API.
