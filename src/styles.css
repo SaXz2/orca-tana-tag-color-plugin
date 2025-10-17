@@ -23,3 +23,9 @@
     border-radius: 50% !important;
 }
 
+
+.orca-block-handle[data-icon]:not(:hover) {
+    width: 1rem;
+    display: inline-flex;
+    justify-content: center;
+}

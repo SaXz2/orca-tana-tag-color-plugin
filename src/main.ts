@@ -534,25 +534,25 @@ function generateMultiColorBackground(tagColors: string[]): string {
   
   if (tagColors.length === 2) {
     // 2个标签：A在下B在上 (0deg-180deg为A，180deg-360deg为B)
-    const colorA = hexToRgba(tagColors[0], 0.45);
-    const colorB = hexToRgba(tagColors[1], 0.45);
+    const colorA = hexToRgba(tagColors[0], 0.75);
+    const colorB = hexToRgba(tagColors[1], 0.75);
     return `conic-gradient(from 0deg, ${colorA} 0deg 180deg, ${colorB} 180deg 360deg)`;
   }
   
   if (tagColors.length === 3) {
     // 3个标签：顺时针 A B C (每个120度)
-    const colorA = hexToRgba(tagColors[0], 0.45);
-    const colorB = hexToRgba(tagColors[1], 0.45);
-    const colorC = hexToRgba(tagColors[2], 0.45);
+    const colorA = hexToRgba(tagColors[0], 0.75);
+    const colorB = hexToRgba(tagColors[1], 0.75);
+    const colorC = hexToRgba(tagColors[2], 0.75);
     return `conic-gradient(from 0deg, ${colorA} 0deg 120deg, ${colorB} 120deg 240deg, ${colorC} 240deg 360deg)`;
   }
   
   if (tagColors.length >= 4) {
     // 4个标签：顺时针 ABCD 四等分 (每个90度)
-    const colorA = hexToRgba(tagColors[0], 0.45);
-    const colorB = hexToRgba(tagColors[1], 0.45);
-    const colorC = hexToRgba(tagColors[2], 0.45);
-    const colorD = hexToRgba(tagColors[3], 0.45);
+    const colorA = hexToRgba(tagColors[0], 0.75);
+    const colorB = hexToRgba(tagColors[1], 0.75);
+    const colorC = hexToRgba(tagColors[2], 0.75);
+    const colorD = hexToRgba(tagColors[3], 0.75);
     return `conic-gradient(from 0deg, ${colorA} 0deg 90deg, ${colorB} 90deg 180deg, ${colorC} 180deg 270deg, ${colorD} 270deg 360deg)`;
   }
   
@@ -583,8 +583,12 @@ function applyMultiTagHandleColor(blockElement: Element, displayColor: string, b
       return; // 跳过子块的图标
     }
     if (handleElement instanceof HTMLElement) {
-      // 设置前景颜色（可能是 domColor 或 colorValue）
-      handleElement.style.setProperty('color', displayColor, 'important');
+      // 多标签时叠加颜色在 Orca 默认颜色上
+      if (tagColors.length > 1) {
+        // 使用第一个标签的颜色叠加在默认颜色上
+        handleElement.style.setProperty('color', displayColor, 'important');
+      }
+      // 单标签时保持原有逻辑（在 applyBlockHandleColor 中处理）
       
       // 设置图标属性
       if (iconValue) {
@@ -641,18 +645,25 @@ function applyMultiTagHandleColor(blockElement: Element, displayColor: string, b
           handleElement.style.setProperty('opacity', '1', 'important');
         }
       } else {
-        // 多标签：始终使用多色分割背景，不依赖 collapsed 类
-        const multiColorBg = generateMultiColorBackground(tagColors);
-        if (multiColorBg) {
-          handleElement.style.setProperty('background-image', multiColorBg, 'important');
-          handleElement.style.removeProperty('background-color');
-        } else {
-          // 清除背景样式
-          handleElement.style.removeProperty('background-color');
-          handleElement.style.removeProperty('background-image');
-        }
-        // 确保完全不透明
-        handleElement.style.setProperty('opacity', '1', 'important');
+        // 多标签：使用 requestAnimationFrame 安全地添加 collapsed 类
+        requestAnimationFrame(() => {
+          // 检查是否已经有 collapsed 类，避免重复添加
+          if (!handleElement.classList.contains('orca-block-handle-collapsed')) {
+            handleElement.classList.add('orca-block-handle-collapsed');
+          }
+          
+          const multiColorBg = generateMultiColorBackground(tagColors);
+          if (multiColorBg) {
+            handleElement.style.setProperty('background-image', multiColorBg, 'important');
+            handleElement.style.removeProperty('background-color');
+          } else {
+            // 清除背景样式
+            handleElement.style.removeProperty('background-color');
+            handleElement.style.removeProperty('background-image');
+          }
+          // 确保完全不透明
+          handleElement.style.setProperty('opacity', '1', 'important');
+        });
       }
     }
   });
@@ -665,8 +676,12 @@ function applyMultiTagHandleColor(blockElement: Element, displayColor: string, b
       return; // 跳过子块的标题
     }
     if (titleElement instanceof HTMLElement) {
-      // 只设置前景颜色（标题不需要图标和背景色）
-      titleElement.style.setProperty('color', displayColor, 'important');
+      // 多标签时叠加颜色在 Orca 默认颜色上
+      if (tagColors.length > 1) {
+        // 使用第一个标签的颜色叠加在默认颜色上
+        titleElement.style.setProperty('color', displayColor, 'important');
+      }
+      // 单标签时保持原有逻辑（在 applyBlockHandleColor 中处理）
     }
   });
 }
