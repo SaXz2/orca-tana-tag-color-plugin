@@ -5,6 +5,8 @@ let pluginName: string;
 let unsubscribe: (() => void) | null = null;
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let cleanupInterval: ReturnType<typeof setInterval> | null = null;
+let autoCleanupTimer: ReturnType<typeof setTimeout> | null = null; // 自动清理定时器
+let lastActivityTime = 0; // 最后活动时间
 
 /**
  * 数据缓存管理类
@@ -233,41 +235,148 @@ class UnifiedObserverManager {
     colorSource?: 'block' | 'tag'; // 添加颜色来源
   }>();
   private retryTimer: ReturnType<typeof setTimeout> | null = null; // 添加重试定时器跟踪
+  private isActive = false; // 添加活动状态跟踪
+  private inactivityTimer: ReturnType<typeof setTimeout> | null = null; // 添加不活动定时器
   
   /**
-   * 启动统一观察器（优化版本：只观察面板容器）
+   * 启动统一观察器（优化版本：只观察面板容器，减少频繁触发）
    */
   startObserver(): void {
     if (this.observer) {
       this.observer.disconnect();
     }
     
+    this.isActive = true;
+    
+    // 添加防抖机制，避免频繁触发
+    let updateTimeout: ReturnType<typeof setTimeout> | null = null;
+    
     this.observer = new MutationObserver((mutations) => {
-      // 批量处理所有变化，避免频繁重绘
-      const elementsToUpdate = new Set<Element>();
+      // 如果观察器已停止，直接返回
+      if (!this.isActive) {
+        return;
+      }
       
-      mutations.forEach(mutation => {
+      // 过滤掉不重要的变化，减少处理频率
+      const importantMutations = mutations.filter(mutation => {
+        // 只处理 class 属性变化和重要的子节点变化
         if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
-          const target = mutation.target as Element;
-          const containerBlock = target.closest('.orca-block.orca-container');
-          if (containerBlock && this.observedElements.has(containerBlock)) {
-            elementsToUpdate.add(containerBlock);
-          }
-        } else if (mutation.type === 'childList') {
-          // 检查新增的子元素
-          mutation.addedNodes.forEach(node => {
-            if (node.nodeType === Node.ELEMENT_NODE) {
-              const element = node as Element;
-              const containerBlock = element.closest('.orca-block.orca-container');
-              if (containerBlock && this.observedElements.has(containerBlock)) {
-                elementsToUpdate.add(containerBlock);
-              }
-            }
-          });
+          return true;
         }
+        if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
+          return true;
+        }
+        return false;
       });
       
-      // 批量更新所有需要更新的元素
+      // 如果没有重要变化，直接返回
+      if (importantMutations.length === 0) {
+        return;
+      }
+      
+      // 防抖：如果已经有待处理的更新，取消之前的定时器
+      if (updateTimeout) {
+        clearTimeout(updateTimeout);
+      }
+      
+      // 延迟处理，避免频繁触发
+      updateTimeout = setTimeout(() => {
+        updateTimeout = null;
+        this.processMutations(importantMutations);
+        // 只在有重要变化时才重置定时器
+        this.resetInactivityTimer();
+      }, 50); // 增加延迟到50ms，减少处理频率
+    });
+    
+    // 优化：只观察面板容器，而不是整个文档
+    this.observePanelContainers();
+  }
+  
+  /**
+   * 重置不活动定时器（优化：减少频繁重置）
+   */
+  private resetInactivityTimer(): void {
+    // 如果已经有定时器在运行，不要频繁重置
+    if (this.inactivityTimer) {
+      return;
+    }
+    
+    // 如果10秒内没有活动，停止观察器
+    this.inactivityTimer = setTimeout(() => {
+      if (this.observer && this.isActive) {
+        debugLog('观察器进入休眠状态，停止观察');
+        this.observer.disconnect();
+        this.isActive = false;
+        this.inactivityTimer = null;
+      }
+    }, 10000); // 增加到10秒，减少频繁重置
+  }
+  
+  /**
+   * 唤醒观察器
+   */
+  wakeUpObserver(): void {
+    if (!this.isActive && this.observer) {
+      debugLog('唤醒观察器');
+      this.isActive = true;
+      this.observePanelContainers();
+    }
+    // 不要立即重置定时器，让观察器运行一段时间
+  }
+  
+  /**
+   * 强制停止观察器
+   */
+  forceStopObserver(): void {
+    debugLog('强制停止观察器');
+    if (this.observer) {
+      this.observer.disconnect();
+    }
+    this.isActive = false;
+    if (this.inactivityTimer) {
+      clearTimeout(this.inactivityTimer);
+      this.inactivityTimer = null;
+    }
+  }
+  
+  /**
+   * 处理突变，批量更新元素
+   */
+  private processMutations(mutations: MutationRecord[]): void {
+    // 批量处理所有变化，避免频繁重绘
+    const elementsToUpdate = new Set<Element>();
+    
+    for (let i = 0; i < mutations.length; i++) {
+      const mutation = mutations[i];
+      
+      if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
+        const target = mutation.target as Element;
+        const containerBlock = target.closest('.orca-block.orca-container');
+        if (containerBlock && this.observedElements.has(containerBlock)) {
+          elementsToUpdate.add(containerBlock);
+        }
+      } else if (mutation.type === 'childList') {
+        // 检查新增的子元素
+        for (let j = 0; j < mutation.addedNodes.length; j++) {
+          const node = mutation.addedNodes[j];
+          if (node.nodeType === Node.ELEMENT_NODE) {
+            const element = node as Element;
+            const containerBlock = element.closest('.orca-block.orca-container');
+            if (containerBlock && this.observedElements.has(containerBlock)) {
+              elementsToUpdate.add(containerBlock);
+            }
+          }
+        }
+      }
+    }
+    
+    // 如果没有需要更新的元素，直接返回
+    if (elementsToUpdate.size === 0) {
+      return;
+    }
+    
+    // 使用 requestAnimationFrame 批量更新，避免阻塞主线程
+    requestAnimationFrame(() => {
       elementsToUpdate.forEach(element => {
         const config = this.observedElements.get(element);
         if (config) {
@@ -277,14 +386,11 @@ class UnifiedObserverManager {
             applyMultiTagHandleColor(element, config.displayColor, config.bgColorValue, config.iconValue, config.tagColors, config.colorSource || 'tag');
           } else {
             // 单标签：使用原有的单标签处理函数
-          applyBlockHandleColor(element, config.displayColor, config.bgColorValue, config.iconValue);
+            applyBlockHandleColor(element, config.displayColor, config.bgColorValue, config.iconValue);
           }
         }
       });
     });
-    
-    // 优化：只观察面板容器，而不是整个文档
-    this.observePanelContainers();
   }
   
   /**
@@ -369,6 +475,13 @@ class UnifiedObserverManager {
       this.retryTimer = null;
     }
     
+    // 清理不活动定时器
+    if (this.inactivityTimer) {
+      clearTimeout(this.inactivityTimer);
+      this.inactivityTimer = null;
+    }
+    
+    this.isActive = false;
     this.observedElements.clear();
   }
   
@@ -467,12 +580,77 @@ function collectViewPanels(panel: any): any[] {
 }
 
 /**
+ * 自动清理函数（基于手动清理的成功方案，但保持功能可用）
+ */
+function autoCleanup() {
+  debugLog('🧹 执行自动清理...');
+  
+  // 清理缓存
+  dataCache.cleanupExpiredCache();
+  domCache.cleanupInvalidReferences();
+  
+  // 强制停止观察器
+  unifiedObserver.forceStopObserver();
+  
+  // 清理所有观察元素
+  unifiedObserver.clearAllObservedElements();
+  
+  // 重要：清理后重新启动观察器，保持功能可用
+  setTimeout(() => {
+    debugLog('🔄 清理后重新启动观察器...');
+    unifiedObserver.startObserver();
+  }, 1000); // 1秒后重新启动
+  
+  debugLog('✅ 自动清理完成！');
+}
+
+/**
+ * 智能自动清理调度器（基于手动清理的成功经验）
+ */
+function scheduleAutoCleanup() {
+  // 清除之前的定时器
+  if (autoCleanupTimer) {
+    clearTimeout(autoCleanupTimer);
+  }
+  
+  // 更新最后活动时间
+  lastActivityTime = Date.now();
+  
+  // 如果60秒内没有活动，执行自动清理（延长到60秒，避免过于频繁）
+  autoCleanupTimer = setTimeout(() => {
+    const timeSinceLastActivity = Date.now() - lastActivityTime;
+    
+    // 确认确实没有活动（防止在定时器期间有活动）
+    if (timeSinceLastActivity >= 60000) {
+      debugLog('🕐 检测到60秒无活动，执行自动清理（基于手动清理的成功方案）');
+      autoCleanup();
+    }
+    
+    autoCleanupTimer = null;
+  }, 60000); // 60秒后检查
+}
+
+/**
+ * 重置自动清理定时器
+ */
+function resetAutoCleanupTimer() {
+  // 更新活动时间
+  lastActivityTime = Date.now();
+  
+  // 重新调度清理
+  scheduleAutoCleanup();
+}
+
+/**
  * 防抖执行函数（优化异步处理和响应速度）
  */
 function debounceGetPanelBlockIds() {
   if (debounceTimer) {
     clearTimeout(debounceTimer);
   }
+
+  // 重置自动清理定时器（有活动时）
+  resetAutoCleanupTimer();
 
   debounceTimer = setTimeout(async () => {
     try {
@@ -482,7 +660,13 @@ function debounceGetPanelBlockIds() {
         dataCache.clearAllCache();
         // 刷新观察器以观察新的面板容器
         unifiedObserver.refreshObserver();
+        
+        // 在面板结构变化时进行清理
+        autoCleanup();
       }
+      
+      // 唤醒观察器，确保它能响应变化
+      unifiedObserver.wakeUpObserver();
       
       // 直接执行，避免嵌套异步调用
       await getAllPanelBlockIds();
@@ -492,7 +676,7 @@ function debounceGetPanelBlockIds() {
       dataCache.clearAllCache();
       domCache.clearAllCache();
     }
-  }, 50); // 降低防抖延迟到50ms，提升响应速度
+  }, 200); // 增加防抖延迟到200ms，大幅减少频繁触发
 }
 
 /**
@@ -761,27 +945,25 @@ function applyMultiTagHandleColor(blockElement: Element, displayColor: string, b
         if (iconValue) {
           // 检查是否为 Tabler Icons 格式（以 "ti " 开头）
           if (iconValue.startsWith('ti ')) {
-            // Tabler Icons 格式，使用 requestAnimationFrame 避免频繁 DOM 操作
-            requestAnimationFrame(() => {
-              const iconClasses = iconValue.split(' ').filter(cls => cls.trim() !== '');
-              
-              // 移除所有现有的 Tabler Icons 类（包括 ti、ti- 开头的所有类）
-              const existingClasses = Array.from(handleElement.classList);
-              existingClasses.forEach(cls => {
-                if (cls === 'ti' || cls.startsWith('ti-')) {
-                  handleElement.classList.remove(cls);
-                }
-              });
-              
-              // 添加新的图标类
-              iconClasses.forEach(cls => {
-                if (cls.trim() !== '') {
-                  handleElement.classList.add(cls);
-                }
-              });
-              
-              debugLog(`块 ${currentBlockId} 的图标是 Tabler Icons 格式: "${iconValue}"，来源: ${colorSource}，覆盖旧图标类`);
+            // Tabler Icons 格式，直接处理，避免不必要的 requestAnimationFrame
+            const iconClasses = iconValue.split(' ').filter(cls => cls.trim() !== '');
+            
+            // 移除所有现有的 Tabler Icons 类（包括 ti、ti- 开头的所有类）
+            const existingClasses = Array.from(handleElement.classList);
+            existingClasses.forEach(cls => {
+              if (cls === 'ti' || cls.startsWith('ti-')) {
+                handleElement.classList.remove(cls);
+              }
             });
+            
+            // 添加新的图标类
+            iconClasses.forEach(cls => {
+              if (cls.trim() !== '') {
+                handleElement.classList.add(cls);
+              }
+            });
+            
+            debugLog(`块 ${currentBlockId} 的图标是 Tabler Icons 格式: "${iconValue}"，来源: ${colorSource}，覆盖旧图标类`);
           } else {
             // 其他格式，设置 data-icon 属性
             handleElement.setAttribute('data-icon', iconValue);
@@ -806,25 +988,23 @@ function applyMultiTagHandleColor(blockElement: Element, displayColor: string, b
             handleElement.style.setProperty('opacity', '1', 'important');
           }
         } else {
-          // 多标签：使用 requestAnimationFrame 安全地添加 collapsed 类
-          requestAnimationFrame(() => {
-            // 检查是否已经有 collapsed 类，避免重复添加
-            if (!handleElement.classList.contains('orca-block-handle-collapsed')) {
-              handleElement.classList.add('orca-block-handle-collapsed');
-            }
-            
-            const multiColorBg = generateMultiColorBackground(tagColors);
-            if (multiColorBg) {
-              handleElement.style.setProperty('background-image', multiColorBg, 'important');
-              handleElement.style.removeProperty('background-color');
-            } else {
-              // 清除背景样式
-              handleElement.style.removeProperty('background-color');
-              handleElement.style.removeProperty('background-image');
-            }
-            // 确保完全不透明
-            handleElement.style.setProperty('opacity', '1', 'important');
-          });
+          // 多标签：直接处理，避免不必要的 requestAnimationFrame
+          // 检查是否已经有 collapsed 类，避免重复添加
+          if (!handleElement.classList.contains('orca-block-handle-collapsed')) {
+            handleElement.classList.add('orca-block-handle-collapsed');
+          }
+          
+          const multiColorBg = generateMultiColorBackground(tagColors);
+          if (multiColorBg) {
+            handleElement.style.setProperty('background-image', multiColorBg, 'important');
+            handleElement.style.removeProperty('background-color');
+          } else {
+            // 清除背景样式
+            handleElement.style.removeProperty('background-color');
+            handleElement.style.removeProperty('background-image');
+          }
+          // 确保完全不透明
+          handleElement.style.setProperty('opacity', '1', 'important');
         }
       }
     });
@@ -927,27 +1107,25 @@ function applyBlockHandleColor(blockElement: Element, displayColor: string, bgCo
       if (iconValue) {
         // 检查是否为 Tabler Icons 格式（以 "ti " 开头）
         if (iconValue.startsWith('ti ')) {
-          // Tabler Icons 格式，使用 requestAnimationFrame 避免频繁 DOM 操作
-          requestAnimationFrame(() => {
-            const iconClasses = iconValue.split(' ').filter(cls => cls.trim() !== '');
-            
-            // 移除所有现有的 Tabler Icons 类（包括 ti、ti- 开头的所有类）
-            const existingClasses = Array.from(handleElement.classList);
-            existingClasses.forEach(cls => {
-              if (cls === 'ti' || cls.startsWith('ti-')) {
-                handleElement.classList.remove(cls);
-              }
-            });
-            
-            // 添加新的图标类
-            iconClasses.forEach(cls => {
-              if (cls.trim() !== '') {
-                handleElement.classList.add(cls);
-              }
-            });
-            
-            debugLog(`块 ${currentBlockId} 的图标是 Tabler Icons 格式: "${iconValue}"，覆盖旧图标类`);
+          // Tabler Icons 格式，直接处理，避免不必要的 requestAnimationFrame
+          const iconClasses = iconValue.split(' ').filter(cls => cls.trim() !== '');
+          
+          // 移除所有现有的 Tabler Icons 类（包括 ti、ti- 开头的所有类）
+          const existingClasses = Array.from(handleElement.classList);
+          existingClasses.forEach(cls => {
+            if (cls === 'ti' || cls.startsWith('ti-')) {
+              handleElement.classList.remove(cls);
+            }
           });
+          
+          // 添加新的图标类
+          iconClasses.forEach(cls => {
+            if (cls.trim() !== '') {
+              handleElement.classList.add(cls);
+            }
+          });
+          
+          debugLog(`块 ${currentBlockId} 的图标是 Tabler Icons 格式: "${iconValue}"，覆盖旧图标类`);
         } else {
           // 其他格式，设置 data-icon 属性
           handleElement.setAttribute('data-icon', iconValue);
@@ -1155,6 +1333,32 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
     // 使用DOM缓存获取容器块元素
     const containerElements = domCache.getContainerElements(panelId);
     
+    // 优化：一次性查询所有需要的DOM元素，减少重复查询
+    const allReprMainElements = new Map<string, Element>();
+    const allTagsElements = new Map<string, Element | null>();
+    const allDataIds = new Map<string, string>();
+    
+    // 批量收集所有容器块的基本信息
+    for (let i = 0; i < containerElements.length; i++) {
+      const element = containerElements[i];
+      const dataId = element.getAttribute('data-id');
+      if (!dataId) continue;
+      
+      allDataIds.set(dataId, dataId);
+      
+      // 一次性查询所有需要的子元素
+      const reprMainElement = element.querySelector('.orca-repr-main');
+      if (reprMainElement) {
+        allReprMainElements.set(dataId, reprMainElement);
+        
+        // 检查是否有标签
+        const tagsElement = reprMainElement.querySelector('.orca-tags');
+        if (tagsElement) {
+          allTagsElements.set(dataId, tagsElement);
+        }
+      }
+    }
+    
     // 筛选出带标签的容器块，以及自身设置了_color的容器块和内联引用
     const taggedBlocksPromises: Promise<{ 
       blockId: string; 
@@ -1182,18 +1386,16 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
     // 优化：使用for循环替代Array.from().map，减少内存分配
     for (let i = 0; i < containerElements.length; i++) {
       const element = containerElements[i];
+      const dataId = element.getAttribute('data-id');
+      if (!dataId) continue;
+      
       const promise = (async () => {
-        // 查找该容器块下的 .orca-repr-main 元素
-        const reprMainElement = element.querySelector('.orca-repr-main');
-        
+        // 使用预查询的结果
+        const reprMainElement = allReprMainElements.get(dataId);
         if (!reprMainElement) return null;
         
-        const dataId = element.getAttribute('data-id');
-        if (!dataId) return null;
-        
-        // 检查 .orca-repr-main 下是否有 .orca-tags
-        const tagsElement = reprMainElement.querySelector('.orca-tags');
-        const hasTags = tagsElement && tagsElement.querySelector('.orca-tag');
+        // 使用预查询的标签信息
+        const hasTags = allTagsElements.has(dataId);
         
         if (hasTags) {
         // 有标签的情况：使用标签处理逻辑
@@ -1513,38 +1715,27 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
     
     // 优化：批量清除样式，减少DOM查询次数
     if (containerElements.length > 0) {
-      // 批量查询所有需要清除样式的元素
-      const allHandleElements: HTMLElement[] = [];
-      const allTitleElements: HTMLElement[] = [];
+      // 优化：使用单个查询获取所有需要清除样式的元素
+      const allHandleElements = panelElement.querySelectorAll('.orca-block-handle');
+      const allTitleElements = panelElement.querySelectorAll('.orca-repr-title');
       
-      // 一次性收集所有需要清除样式的元素
-      containerElements.forEach((element) => {
-        const handleElements = element.querySelectorAll('.orca-block-handle');
-        handleElements.forEach(handleElement => {
-          if (handleElement instanceof HTMLElement) {
-            allHandleElements.push(handleElement);
-          }
-        });
-        
-        const titleElements = element.querySelectorAll('.orca-repr-title');
-        titleElements.forEach(titleElement => {
-          if (titleElement instanceof HTMLElement) {
-            allTitleElements.push(titleElement);
-          }
-        });
-      });
+      // 批量清除样式，使用更高效的循环
+      for (let i = 0; i < allHandleElements.length; i++) {
+        const handleElement = allHandleElements[i];
+        if (handleElement instanceof HTMLElement) {
+          handleElement.style.removeProperty('color');
+          handleElement.style.removeProperty('background-color');
+          handleElement.style.removeProperty('opacity');
+          // 注意：不清理 data-icon，避免清理自身块设置的图标
+        }
+      }
       
-      // 批量清除样式
-      allHandleElements.forEach(handleElement => {
-        handleElement.style.removeProperty('color');
-        handleElement.style.removeProperty('background-color');
-        handleElement.style.removeProperty('opacity');
-        // 注意：不清理 data-icon，避免清理自身块设置的图标
-      });
-      
-      allTitleElements.forEach(titleElement => {
-        titleElement.style.removeProperty('color');
-      });
+      for (let i = 0; i < allTitleElements.length; i++) {
+        const titleElement = allTitleElements[i];
+        if (titleElement instanceof HTMLElement) {
+          titleElement.style.removeProperty('color');
+        }
+      }
     }
     
     // 批量清除内联引用样式
@@ -1609,33 +1800,40 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
         
         // 批量处理容器块
         if (containerBlocks.length > 0) {
-          const containerBlockIds = containerBlocks.map(block => block!.blockId);
-          const allContainerElements = new Map<string, NodeListOf<Element>>();
+          // 优化：使用单个查询获取所有容器块元素，然后按blockId分组
+          const allContainerElements = panelElement.querySelectorAll('.orca-block.orca-container[data-id]');
+          const containerElementsByBlockId = new Map<string, Element[]>();
           
-          // 一次性查询所有需要的容器块元素
-          containerBlockIds.forEach(blockId => {
-            if (!allContainerElements.has(blockId)) {
-              const elements = panelElement.querySelectorAll(`[data-id="${blockId}"]`);
-              allContainerElements.set(blockId, elements);
+          // 一次性遍历所有容器块元素，按blockId分组
+          for (let i = 0; i < allContainerElements.length; i++) {
+            const element = allContainerElements[i];
+            const blockId = element.getAttribute('data-id');
+            if (blockId) {
+              if (!containerElementsByBlockId.has(blockId)) {
+                containerElementsByBlockId.set(blockId, []);
+              }
+              containerElementsByBlockId.get(blockId)!.push(element);
             }
-          });
+          }
           
           // 批量应用样式
-          containerBlocks.forEach(block => {
+          for (let i = 0; i < containerBlocks.length; i++) {
+            const block = containerBlocks[i];
             if (block) {
-              const blockElements = allContainerElements.get(block.blockId);
+              const blockElements = containerElementsByBlockId.get(block.blockId);
               if (blockElements) {
-                blockElements.forEach(blockElement => {
+                for (let j = 0; j < blockElements.length; j++) {
+                  const blockElement = blockElements[j];
                   if (block.tagColors.length > 1) {
                     applyMultiTagHandleColor(blockElement, block.displayColor, block.bgColorValue, block.iconValue, block.tagColors, block.colorSource);
                   } else {
                     applyBlockHandleColor(blockElement, block.displayColor, block.bgColorValue, block.iconValue);
                   }
                   observeBlockHandleCollapse(blockElement, block.displayColor, block.bgColorValue, block.iconValue, block.tagColors, block.colorSource);
-                });
+                }
               }
             }
-          });
+          }
         }
         
         // 优化：批量处理内联引用块，减少DOM查询和循环开销
@@ -1712,25 +1910,187 @@ export async function load(_name: string) {
     "获取所有面板的块ID"
   );
 
+  // 注册性能测试命令
+  orca.commands.registerCommand(
+    `${pluginName}.performanceTest`,
+    async () => {
+      console.log('🚀 开始性能测试...');
+      
+      // 测试1：DOM查询性能
+      console.time('DOM查询测试');
+      const panels = orca.state.panels;
+      const viewPanels = collectViewPanels(panels);
+      console.log(`面板数量: ${viewPanels.length}`);
+      
+      let totalElements = 0;
+      for (const panel of viewPanels) {
+        const panelElement = domCache.getPanelElement(panel.id);
+        if (panelElement) {
+          const containerElements = domCache.getContainerElements(panel.id);
+          totalElements += containerElements.length;
+        }
+      }
+      console.log(`总容器块数量: ${totalElements}`);
+      console.timeEnd('DOM查询测试');
+      
+      // 测试2：缓存性能
+      console.time('缓存性能测试');
+      dataCache.cleanupExpiredCache();
+      domCache.cleanupInvalidReferences();
+      console.timeEnd('缓存性能测试');
+      
+      // 测试3：内存使用情况
+      if ((performance as any).memory) {
+        console.log('📊 内存使用情况:');
+        console.log(`已使用堆内存: ${((performance as any).memory.usedJSHeapSize / 1024 / 1024).toFixed(2)} MB`);
+        console.log(`总堆内存: ${((performance as any).memory.totalJSHeapSize / 1024 / 1024).toFixed(2)} MB`);
+        console.log(`堆内存限制: ${((performance as any).memory.jsHeapSizeLimit / 1024 / 1024).toFixed(2)} MB`);
+      }
+      
+      // 测试4：观察器状态
+      console.log('👀 观察器状态:');
+      console.log(`观察的元素数量: ${unifiedObserver['observedElements']?.size || 0}`);
+      
+      console.log('✅ 性能测试完成！');
+    },
+    "性能测试"
+  );
+
+  // 注册CPU监控命令
+  orca.commands.registerCommand(
+    `${pluginName}.startCPUMonitor`,
+    () => {
+      console.log('📈 开始CPU监控...');
+      let frameCount = 0;
+      let lastTime = performance.now();
+      
+      const monitor = () => {
+        frameCount++;
+        const currentTime = performance.now();
+        
+        if (currentTime - lastTime >= 1000) { // 每秒报告一次
+          const fps = Math.round((frameCount * 1000) / (currentTime - lastTime));
+          console.log(`🖥️ FPS: ${fps}, 帧数: ${frameCount}`);
+          
+          // 检查是否有性能问题
+          if (fps < 30) {
+            console.warn('⚠️ 性能警告: FPS过低，可能存在性能问题');
+          }
+          
+          frameCount = 0;
+          lastTime = currentTime;
+        }
+        
+        requestAnimationFrame(monitor);
+      };
+      
+      requestAnimationFrame(monitor);
+      
+      // 10秒后停止监控
+      setTimeout(() => {
+        console.log('📈 CPU监控结束');
+      }, 10000);
+    },
+    "开始CPU监控"
+  );
+
+  // 注册手动清理命令
+  orca.commands.registerCommand(
+    `${pluginName}.manualCleanup`,
+    () => {
+      console.log('🧹 开始手动清理...');
+      
+      // 清理缓存
+      dataCache.cleanupExpiredCache();
+      domCache.cleanupInvalidReferences();
+      
+      // 强制停止观察器
+      unifiedObserver.forceStopObserver();
+      
+      // 清理所有观察元素
+      unifiedObserver.clearAllObservedElements();
+      
+      console.log('✅ 手动清理完成！');
+    },
+    "手动清理缓存和观察器"
+  );
+
+  // 注册强制停止命令
+  orca.commands.registerCommand(
+    `${pluginName}.forceStop`,
+    () => {
+      console.log('🛑 强制停止所有活动...');
+      
+      // 强制停止观察器
+      unifiedObserver.forceStopObserver();
+      
+      // 清理所有定时器
+      if (debounceTimer) {
+        clearTimeout(debounceTimer);
+        debounceTimer = null;
+      }
+      
+      // 清理所有观察元素
+      unifiedObserver.clearAllObservedElements();
+      
+      console.log('✅ 强制停止完成！');
+    },
+    "强制停止所有活动"
+  );
+
   // 启动统一观察器
   unifiedObserver.startObserver();
   
-  // 启动定期清理任务（每5分钟清理一次过期缓存和失效DOM引用）
-  cleanupInterval = setInterval(() => {
-    dataCache.cleanupExpiredCache();
-    domCache.cleanupInvalidReferences(); // 添加DOM引用清理
-    debugLog('执行定期缓存和DOM引用清理');
-  }, 5 * 60 * 1000); // 5分钟
+  // 启动智能自动清理机制
+  scheduleAutoCleanup();
+  debugLog('🤖 智能自动清理机制已启动（60秒无活动时自动清理）');
+  
+  // 添加性能监控，在检测到问题时自动清理
+  let performanceCheckCount = 0;
+  const performanceCheckInterval = setInterval(() => {
+    performanceCheckCount++;
+    
+    // 每5分钟检查一次性能
+    if (performanceCheckCount >= 5) {
+      performanceCheckCount = 0;
+      
+      // 检查观察器是否过于活跃
+      const observedElementsCount = unifiedObserver['observedElements']?.size || 0;
+      if (observedElementsCount > 100) { // 如果观察的元素过多
+        debugLog('⚠️ 检测到观察器过于活跃，执行预防性清理');
+        autoCleanup();
+      }
+    }
+  }, 60000); // 每分钟检查一次
+  
+  // 存储性能检查定时器引用，在unload时清理
+  window.addEventListener('beforeunload', () => {
+    clearInterval(performanceCheckInterval);
+  });
   
   // 插件加载时延迟执行初始化（给DOM渲染留出时间）
   debugLog(`将在 ${INITIAL_DELAY}ms 后开始初始化`);
   setTimeout(() => initializeWithRetry(), INITIAL_DELAY);
 
-  // 监听面板变化和设置变化
+  // 监听面板变化和设置变化（优化：添加条件检查，减少不必要的触发）
   if (window.Valtio?.subscribe) {
+    let lastStateHash = '';
+    
     unsubscribe = window.Valtio.subscribe(orca.state, () => {
-      // 使用防抖函数，避免频繁触发
-      debounceGetPanelBlockIds();
+      // 检查状态是否真的发生了变化
+      const currentStateHash = JSON.stringify({
+        panels: orca.state.panels,
+        plugins: orca.state.plugins[pluginName]?.settings
+      });
+      
+      // 只有当状态真正发生变化时才触发
+      if (currentStateHash !== lastStateHash) {
+        lastStateHash = currentStateHash;
+        // 重置自动清理定时器（状态变化表示有活动）
+        resetAutoCleanupTimer();
+        // 使用防抖函数，避免频繁触发
+        debounceGetPanelBlockIds();
+      }
     });
   }
 }
@@ -1752,10 +2112,16 @@ export async function unload() {
     debounceTimer = null;
   }
   
-  // 清理定期清理任务
+  // 清理定期清理任务（已移除，但保留清理代码以防万一）
   if (cleanupInterval) {
     clearInterval(cleanupInterval);
     cleanupInterval = null;
+  }
+  
+  // 清理自动清理定时器
+  if (autoCleanupTimer) {
+    clearTimeout(autoCleanupTimer);
+    autoCleanupTimer = null;
   }
   
   // 取消状态监听

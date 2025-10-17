@@ -8,11 +8,7 @@
     background-repeat: no-repeat !important;
 }
 
-/* 针对多标签的圆形分割效果优化 */
-.orca-block-handle[style*="conic-gradient"] {
-    /* 确保圆形分割效果正确显示 */
-    border-radius: 50% !important;
-}
+
 
 /* 多标签 orca-block-handle 的 :before 伪元素混合模式 */
 .orca-block-handle-collapsed:before {
