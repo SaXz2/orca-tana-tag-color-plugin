@@ -463,25 +463,23 @@ function debounceGetPanelBlockIds() {
   }
 
   debounceTimer = setTimeout(async () => {
-    // 使用 requestAnimationFrame 优化渲染，避免闪烁
-    requestAnimationFrame(async () => {
-      try {
-        // 检查面板结构是否发生变化，如果变化则清除缓存并刷新观察器
-        if (domCache.checkPanelStructureChange()) {
-          domCache.clearAllCache();
-          dataCache.clearAllCache();
-          // 刷新观察器以观察新的面板容器
-          unifiedObserver.refreshObserver();
-        }
-        
-        await getAllPanelBlockIds();
-      } catch (error) {
-        debugError('执行getAllPanelBlockIds时发生错误:', error);
-        // 清理缓存，避免错误状态持续
-        dataCache.clearAllCache();
+    try {
+      // 检查面板结构是否发生变化，如果变化则清除缓存并刷新观察器
+      if (domCache.checkPanelStructureChange()) {
         domCache.clearAllCache();
+        dataCache.clearAllCache();
+        // 刷新观察器以观察新的面板容器
+        unifiedObserver.refreshObserver();
       }
-    });
+      
+      // 直接执行，避免嵌套异步调用
+      await getAllPanelBlockIds();
+    } catch (error) {
+      debugError('执行getAllPanelBlockIds时发生错误:', error);
+      // 清理缓存，避免错误状态持续
+      dataCache.clearAllCache();
+      domCache.clearAllCache();
+    }
   }, 50); // 降低防抖延迟到50ms，提升响应速度
 }
 
@@ -596,9 +594,17 @@ function calculateDomColor(colorValue: string): string {
 }
 
 /**
- * 将十六进制颜色转换为带透明度的 rgba 格式
+ * 将十六进制颜色转换为带透明度的 rgba 格式（带缓存优化）
  */
+const hexToRgbaCache = new Map<string, string>();
+
 function hexToRgba(hex: string, alpha: number): string {
+  const cacheKey = `${hex}-${alpha}`;
+  
+  if (hexToRgbaCache.has(cacheKey)) {
+    return hexToRgbaCache.get(cacheKey)!;
+  }
+  
   // 移除 # 符号
   hex = hex.replace('#', '');
   
@@ -611,7 +617,14 @@ function hexToRgba(hex: string, alpha: number): string {
   const g = parseInt(hex.substring(2, 4), 16);
   const b = parseInt(hex.substring(4, 6), 16);
   
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  const result = `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  
+  // 缓存结果（限制缓存大小，避免内存泄漏）
+  if (hexToRgbaCache.size < 1000) {
+    hexToRgbaCache.set(cacheKey, result);
+  }
+  
+  return result;
 }
 
 /**
@@ -707,106 +720,108 @@ function generateMultiColorBackground(tagColors: string[]): string {
  * @param tagColors 多标签颜色数组
  */
 function applyMultiTagHandleColor(blockElement: Element, displayColor: string, bgColorValue: string, iconValue: string | null, tagColors: string[], colorSource: 'block' | 'tag') {
-  // 查找当前块的所有图标元素和标题元素
+  // 批量查询DOM元素，减少重复查询
   const handleElements = blockElement.querySelectorAll('.orca-block-handle');
   const titleElements = blockElement.querySelectorAll('.orca-repr-title');
   const inlineElements = blockElement.querySelectorAll('.orca-inline[data-type="t"]');
   
-  // 获取当前块的data-id
+  // 获取当前块的data-id（只查询一次）
   const currentBlockId = blockElement.getAttribute('data-id');
   
-  // 处理图标元素
-  handleElements.forEach(handleElement => {
-    // 检查这个图标是否属于当前块（不是子块）
-    const handleParentBlock = handleElement.closest('.orca-block.orca-container');
-    if (handleParentBlock && handleParentBlock.getAttribute('data-id') !== currentBlockId) {
-      return; // 跳过子块的图标
-    }
-    if (handleElement instanceof HTMLElement) {
-      // 多标签时叠加颜色在 Orca 默认颜色上
-      if (tagColors.length > 1) {
-        // 使用第一个标签的颜色叠加在默认颜色上
-        handleElement.style.setProperty('color', displayColor, 'important');
+  // 批量处理图标元素
+  if (handleElements.length > 0) {
+    handleElements.forEach(handleElement => {
+      // 检查这个图标是否属于当前块（不是子块）
+      const handleParentBlock = handleElement.closest('.orca-block.orca-container');
+      if (handleParentBlock && handleParentBlock.getAttribute('data-id') !== currentBlockId) {
+        return; // 跳过子块的图标
       }
-      // 单标签时保持原有逻辑（在 applyBlockHandleColor 中处理）
-      
-      // 设置图标属性
-      if (iconValue) {
-        // 检查是否为 Tabler Icons 格式（以 "ti " 开头）
-        if (iconValue.startsWith('ti ')) {
-          // Tabler Icons 格式，使用 requestAnimationFrame 避免频繁 DOM 操作
-          requestAnimationFrame(() => {
-            const iconClasses = iconValue.split(' ').filter(cls => cls.trim() !== '');
-            
-            // 移除所有现有的 Tabler Icons 类（包括 ti、ti- 开头的所有类）
-            const existingClasses = Array.from(handleElement.classList);
-            existingClasses.forEach(cls => {
-              if (cls === 'ti' || cls.startsWith('ti-')) {
-                handleElement.classList.remove(cls);
-              }
-            });
-            
-            // 添加新的图标类
-            iconClasses.forEach(cls => {
-              if (cls.trim() !== '') {
-                handleElement.classList.add(cls);
-              }
-            });
-            
-            debugLog(`块 ${currentBlockId} 的图标是 Tabler Icons 格式: "${iconValue}"，来源: ${colorSource}，覆盖旧图标类`);
-          });
-        } else {
-          // 其他格式，设置 data-icon 属性
-          handleElement.setAttribute('data-icon', iconValue);
-          debugLog(`为块 ${currentBlockId} 的图标设置 data-icon="${iconValue}"，来源: ${colorSource}`);
+      if (handleElement instanceof HTMLElement) {
+        // 多标签时叠加颜色在 Orca 默认颜色上
+        if (tagColors.length > 1) {
+          // 使用第一个标签的颜色叠加在默认颜色上
+          handleElement.style.setProperty('color', displayColor, 'important');
         }
-      } else {
-        debugLog(`块 ${currentBlockId} 没有图标值，跳过设置 data-icon`);
-      }
-      
-      // 根据标签数量决定处理方式
-      if (tagColors.length === 1) {
-        // 单标签：使用原有的单标签逻辑
-        if (handleElement.classList.contains('orca-block-handle-collapsed')) {
-          const bgColor = hexToRgba(tagColors[0], 0.45);
-          handleElement.style.setProperty('background-color', bgColor, 'important');
-          handleElement.style.removeProperty('background-image');
-        } else {
-          // 没有折叠类时，清除背景颜色
-          handleElement.style.removeProperty('background-color');
-          handleElement.style.removeProperty('background-image');
-          // 确保非折叠状态下完全不透明
-          handleElement.style.setProperty('opacity', '1', 'important');
-        }
-      } else {
-        // 多标签：使用 requestAnimationFrame 安全地添加 collapsed 类
-        requestAnimationFrame(() => {
-          // 检查是否已经有 collapsed 类，避免重复添加
-          if (!handleElement.classList.contains('orca-block-handle-collapsed')) {
-            handleElement.classList.add('orca-block-handle-collapsed');
-          }
-          
-          const multiColorBg = generateMultiColorBackground(tagColors);
-          if (multiColorBg) {
-            handleElement.style.setProperty('background-image', multiColorBg, 'important');
-            handleElement.style.removeProperty('background-color');
+        // 单标签时保持原有逻辑（在 applyBlockHandleColor 中处理）
+        
+        // 设置图标属性
+        if (iconValue) {
+          // 检查是否为 Tabler Icons 格式（以 "ti " 开头）
+          if (iconValue.startsWith('ti ')) {
+            // Tabler Icons 格式，使用 requestAnimationFrame 避免频繁 DOM 操作
+            requestAnimationFrame(() => {
+              const iconClasses = iconValue.split(' ').filter(cls => cls.trim() !== '');
+              
+              // 移除所有现有的 Tabler Icons 类（包括 ti、ti- 开头的所有类）
+              const existingClasses = Array.from(handleElement.classList);
+              existingClasses.forEach(cls => {
+                if (cls === 'ti' || cls.startsWith('ti-')) {
+                  handleElement.classList.remove(cls);
+                }
+              });
+              
+              // 添加新的图标类
+              iconClasses.forEach(cls => {
+                if (cls.trim() !== '') {
+                  handleElement.classList.add(cls);
+                }
+              });
+              
+              debugLog(`块 ${currentBlockId} 的图标是 Tabler Icons 格式: "${iconValue}"，来源: ${colorSource}，覆盖旧图标类`);
+            });
           } else {
-            // 清除背景样式
+            // 其他格式，设置 data-icon 属性
+            handleElement.setAttribute('data-icon', iconValue);
+            debugLog(`为块 ${currentBlockId} 的图标设置 data-icon="${iconValue}"，来源: ${colorSource}`);
+          }
+        } else {
+          debugLog(`块 ${currentBlockId} 没有图标值，跳过设置 data-icon`);
+        }
+        
+        // 根据标签数量决定处理方式
+        if (tagColors.length === 1) {
+          // 单标签：使用原有的单标签逻辑
+          if (handleElement.classList.contains('orca-block-handle-collapsed')) {
+            const bgColor = hexToRgba(tagColors[0], 0.45);
+            handleElement.style.setProperty('background-color', bgColor, 'important');
+            handleElement.style.removeProperty('background-image');
+          } else {
+            // 没有折叠类时，清除背景颜色
             handleElement.style.removeProperty('background-color');
             handleElement.style.removeProperty('background-image');
+            // 确保非折叠状态下完全不透明
+            handleElement.style.setProperty('opacity', '1', 'important');
           }
-          // 确保完全不透明
-          handleElement.style.setProperty('opacity', '1', 'important');
-        });
+        } else {
+          // 多标签：使用 requestAnimationFrame 安全地添加 collapsed 类
+          requestAnimationFrame(() => {
+            // 检查是否已经有 collapsed 类，避免重复添加
+            if (!handleElement.classList.contains('orca-block-handle-collapsed')) {
+              handleElement.classList.add('orca-block-handle-collapsed');
+            }
+            
+            const multiColorBg = generateMultiColorBackground(tagColors);
+            if (multiColorBg) {
+              handleElement.style.setProperty('background-image', multiColorBg, 'important');
+              handleElement.style.removeProperty('background-color');
+            } else {
+              // 清除背景样式
+              handleElement.style.removeProperty('background-color');
+              handleElement.style.removeProperty('background-image');
+            }
+            // 确保完全不透明
+            handleElement.style.setProperty('opacity', '1', 'important');
+          });
+        }
       }
-    }
-  });
+    });
+  }
   
   // 处理标题元素（根据设置和颜色来源决定是否启用）
   const settings = orca.state.plugins[pluginName]?.settings;
   const enableTitleColor = settings?.enableTitleColor ?? true;
   
-  if (colorSource === 'tag' && enableTitleColor) {
+  if (colorSource === 'tag' && enableTitleColor && titleElements.length > 0) {
     titleElements.forEach(titleElement => {
       // 检查这个标题是否属于当前块（不是子块）
       const titleParentBlock = titleElement.closest('.orca-block.orca-container');
@@ -824,7 +839,7 @@ function applyMultiTagHandleColor(blockElement: Element, displayColor: string, b
         }
       }
     });
-  } else if (!enableTitleColor) {
+  } else if (!enableTitleColor && titleElements.length > 0) {
     // 当设置关闭时，清除标题颜色样式
     titleElements.forEach(titleElement => {
       const titleParentBlock = titleElement.closest('.orca-block.orca-container');
@@ -840,26 +855,28 @@ function applyMultiTagHandleColor(blockElement: Element, displayColor: string, b
   // 处理内联元素（根据开关状态决定是否应用或清除样式）
   const enableInlineColor = settings?.enableInlineColor ?? false;
   
-  inlineElements.forEach(inlineElement => {
-    // 检查这个内联元素是否属于当前块（不是子块）
-    const inlineParentBlock = inlineElement.closest('.orca-block.orca-container');
-    if (inlineParentBlock && inlineParentBlock.getAttribute('data-id') !== currentBlockId) {
-      return; // 跳过子块的内联元素
-    }
-    if (inlineElement instanceof HTMLElement) {
-      if (enableInlineColor && colorSource === 'tag') {
-        // 启用时：应用样式
-        if (tagColors.length === 1) {
-          // 单标签：使用原有逻辑
-          inlineElement.style.setProperty('color', displayColor, 'important');
-        }
-        // 多标签情况：不处理内联元素颜色
-      } else {
-        // 关闭时：清除样式
-        inlineElement.style.removeProperty('color');
+  if (inlineElements.length > 0) {
+    inlineElements.forEach(inlineElement => {
+      // 检查这个内联元素是否属于当前块（不是子块）
+      const inlineParentBlock = inlineElement.closest('.orca-block.orca-container');
+      if (inlineParentBlock && inlineParentBlock.getAttribute('data-id') !== currentBlockId) {
+        return; // 跳过子块的内联元素
       }
-    }
-  });
+      if (inlineElement instanceof HTMLElement) {
+        if (enableInlineColor && colorSource === 'tag') {
+          // 启用时：应用样式
+          if (tagColors.length === 1) {
+            // 单标签：使用原有逻辑
+            inlineElement.style.setProperty('color', displayColor, 'important');
+          }
+          // 多标签情况：不处理内联元素颜色
+        } else {
+          // 关闭时：清除样式
+          inlineElement.style.removeProperty('color');
+        }
+      }
+    });
+  }
 }
 
 /**
