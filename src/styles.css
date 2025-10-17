@@ -23,6 +23,11 @@
     border-radius: 50% !important;
 }
 
+/* 多标签 orca-block-handle 的 :before 伪元素混合模式 */
+.orca-block-handle-collapsed:before {
+    mix-blend-mode: overlay;
+}
+
 
 .orca-block-handle[data-icon]:not(:hover) {
     width: 1rem;

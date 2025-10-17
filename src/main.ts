@@ -391,6 +391,11 @@ const settingsSchema = {
     type: "boolean" as const,
     defaultValue: false,
   },
+  enableTitleColor: {
+    label: "启用标题颜色",
+    type: "boolean" as const,
+    defaultValue: true,
+  },
   debugMode: {
     label: "调试模式",
     type: "boolean" as const,
@@ -797,8 +802,11 @@ function applyMultiTagHandleColor(blockElement: Element, displayColor: string, b
     }
   });
   
-  // 处理标题元素（只有标签颜色时才启用）
-  if (colorSource === 'tag') {
+  // 处理标题元素（根据设置和颜色来源决定是否启用）
+  const settings = orca.state.plugins[pluginName]?.settings;
+  const enableTitleColor = settings?.enableTitleColor ?? true;
+  
+  if (colorSource === 'tag' && enableTitleColor) {
     titleElements.forEach(titleElement => {
       // 检查这个标题是否属于当前块（不是子块）
       const titleParentBlock = titleElement.closest('.orca-block.orca-container');
@@ -816,10 +824,20 @@ function applyMultiTagHandleColor(blockElement: Element, displayColor: string, b
         }
       }
     });
+  } else if (!enableTitleColor) {
+    // 当设置关闭时，清除标题颜色样式
+    titleElements.forEach(titleElement => {
+      const titleParentBlock = titleElement.closest('.orca-block.orca-container');
+      if (titleParentBlock && titleParentBlock.getAttribute('data-id') !== currentBlockId) {
+        return; // 跳过子块的标题
+      }
+      if (titleElement instanceof HTMLElement) {
+        titleElement.style.removeProperty('color');
+      }
+    });
   }
   
   // 处理内联元素（根据开关状态决定是否应用或清除样式）
-  const settings = orca.state.plugins[pluginName]?.settings;
   const enableInlineColor = settings?.enableInlineColor ?? false;
   
   inlineElements.forEach(inlineElement => {
@@ -919,21 +937,36 @@ function applyBlockHandleColor(blockElement: Element, displayColor: string, bgCo
     }
   });
   
-  // 处理标题元素
-  titleElements.forEach(titleElement => {
-    // 检查这个标题是否属于当前块（不是子块）
-    const titleParentBlock = titleElement.closest('.orca-block.orca-container');
-    if (titleParentBlock && titleParentBlock.getAttribute('data-id') !== currentBlockId) {
-      return; // 跳过子块的标题
-    }
-    if (titleElement instanceof HTMLElement) {
-      // 只设置前景颜色（标题不需要图标和背景色）
-      titleElement.style.setProperty('color', displayColor, 'important');
-    }
-  });
+  // 处理标题元素（根据设置决定是否启用）
+  const settings = orca.state.plugins[pluginName]?.settings;
+  const enableTitleColor = settings?.enableTitleColor ?? true;
+  
+  if (enableTitleColor) {
+    titleElements.forEach(titleElement => {
+      // 检查这个标题是否属于当前块（不是子块）
+      const titleParentBlock = titleElement.closest('.orca-block.orca-container');
+      if (titleParentBlock && titleParentBlock.getAttribute('data-id') !== currentBlockId) {
+        return; // 跳过子块的标题
+      }
+      if (titleElement instanceof HTMLElement) {
+        // 只设置前景颜色（标题不需要图标和背景色）
+        titleElement.style.setProperty('color', displayColor, 'important');
+      }
+    });
+  } else {
+    // 当设置关闭时，清除标题颜色样式
+    titleElements.forEach(titleElement => {
+      const titleParentBlock = titleElement.closest('.orca-block.orca-container');
+      if (titleParentBlock && titleParentBlock.getAttribute('data-id') !== currentBlockId) {
+        return; // 跳过子块的标题
+      }
+      if (titleElement instanceof HTMLElement) {
+        titleElement.style.removeProperty('color');
+      }
+    });
+  }
   
   // 处理内联元素（根据开关状态决定是否应用或清除样式）
-  const settings = orca.state.plugins[pluginName]?.settings;
   const enableInlineColor = settings?.enableInlineColor ?? false;
   
   inlineElements.forEach(inlineElement => {
@@ -1544,7 +1577,7 @@ export async function load(_name: string) {
   setupL10N(orca.state.locale, { "zh-CN": zhCN });
 
   // 注入CSS样式
-  orca.themes.injectCSSResource("styles.css", `${pluginName}-styles`);
+  orca.themes.injectCSSResource(`${pluginName}/dist/styles.css`, `${pluginName}-styles`);
 
   // 注册设置 schema
   await orca.plugins.setSettingsSchema(pluginName, settingsSchema);
