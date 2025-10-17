@@ -99,11 +99,18 @@ class DOMCache {
   private lastPanelStructureHash = '';
   
   /**
-   * 获取面板元素（带缓存）
+   * 获取面板元素（带缓存，内存泄漏防护）
    */
   getPanelElement(panelId: string): Element | null {
     if (this.panelElementsCache.has(panelId)) {
-      return this.panelElementsCache.get(panelId)!;
+      const cachedElement = this.panelElementsCache.get(panelId);
+      // 检查缓存的元素是否仍然存在于DOM中
+      if (cachedElement && document.contains(cachedElement)) {
+        return cachedElement;
+      } else {
+        // 元素已被删除，清除缓存
+        this.panelElementsCache.delete(panelId);
+      }
     }
     
     const element = document.querySelector(`[data-panel-id="${panelId}"]`);
@@ -112,13 +119,20 @@ class DOMCache {
   }
   
   /**
-   * 获取面板内的容器块元素（带缓存）
+   * 获取面板内的容器块元素（带缓存，内存泄漏防护）
    */
   getContainerElements(panelId: string): NodeListOf<Element> {
     const cacheKey = `${panelId}_containers`;
     
     if (this.containerElementsCache.has(cacheKey)) {
-      return this.containerElementsCache.get(cacheKey)!;
+      const cachedElements = this.containerElementsCache.get(cacheKey)!;
+      // 检查缓存的元素列表是否仍然有效（至少检查第一个元素）
+      if (cachedElements.length > 0 && document.contains(cachedElements[0])) {
+        return cachedElements;
+      } else {
+        // 缓存失效，清除缓存
+        this.containerElementsCache.delete(cacheKey);
+      }
     }
     
     const panelElement = this.getPanelElement(panelId);
@@ -170,6 +184,27 @@ class DOMCache {
     const viewPanels = collectViewPanels(panels);
     return viewPanels.map(p => `${p.id}-${p.view}-${p.viewArgs?.blockId || p.viewArgs?.date || ''}`).join('|');
   }
+  
+  /**
+   * 清理失效的DOM引用（内存泄漏防护）
+   */
+  cleanupInvalidReferences(): void {
+    // 清理失效的面板元素引用
+    for (const [panelId, element] of this.panelElementsCache.entries()) {
+      if (element && !document.contains(element)) {
+        this.panelElementsCache.delete(panelId);
+        debugLog(`清理失效的面板元素引用: ${panelId}`);
+      }
+    }
+    
+    // 清理失效的容器元素引用
+    for (const [cacheKey, elements] of this.containerElementsCache.entries()) {
+      if (elements.length > 0 && !document.contains(elements[0])) {
+        this.containerElementsCache.delete(cacheKey);
+        debugLog(`清理失效的容器元素引用: ${cacheKey}`);
+      }
+    }
+  }
 }
 
 /**
@@ -185,9 +220,10 @@ class UnifiedObserverManager {
     tagColors?: string[]; // 添加多标签颜色数组
     colorSource?: 'block' | 'tag'; // 添加颜色来源
   }>();
+  private retryTimer: ReturnType<typeof setTimeout> | null = null; // 添加重试定时器跟踪
   
   /**
-   * 启动统一观察器
+   * 启动统一观察器（优化版本：只观察面板容器）
    */
   startObserver(): void {
     if (this.observer) {
@@ -235,13 +271,55 @@ class UnifiedObserverManager {
       });
     });
     
-    // 开始观察整个文档
-    this.observer.observe(document.body, {
-      attributes: true,
-      attributeFilter: ['class'],
-      subtree: true,
-      childList: true
+    // 优化：只观察面板容器，而不是整个文档
+    this.observePanelContainers();
+  }
+  
+  /**
+   * 观察面板容器（性能优化：减少观察范围，内存泄漏防护）
+   */
+  private observePanelContainers(): void {
+    if (!this.observer) return;
+    
+    // 清理之前的重试定时器
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    
+    // 获取所有面板容器
+    const panelContainers = document.querySelectorAll('[data-panel-id]');
+    
+    if (panelContainers.length === 0) {
+      // 如果没有面板容器，延迟重试（最多重试10次）
+      this.retryTimer = setTimeout(() => {
+        this.retryTimer = null;
+        this.observePanelContainers();
+      }, 100);
+      return;
+    }
+    
+    // 观察每个面板容器
+    panelContainers.forEach(panel => {
+      this.observer!.observe(panel, {
+        attributes: true,
+        attributeFilter: ['class'],
+        subtree: true,
+        childList: true
+      });
     });
+    
+    debugLog(`开始观察 ${panelContainers.length} 个面板容器`);
+  }
+  
+  /**
+   * 重新观察面板容器（当面板结构变化时调用）
+   */
+  refreshObserver(): void {
+    if (this.observer) {
+      this.observer.disconnect();
+      this.observePanelContainers();
+    }
   }
   
   /**
@@ -265,13 +343,20 @@ class UnifiedObserverManager {
   }
   
   /**
-   * 停止观察器
+   * 停止观察器（内存泄漏防护：完整清理）
    */
   stopObserver(): void {
     if (this.observer) {
       this.observer.disconnect();
       this.observer = null;
     }
+    
+    // 清理重试定时器
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    
     this.observedElements.clear();
   }
   
@@ -376,10 +461,12 @@ function debounceGetPanelBlockIds() {
     // 使用 requestAnimationFrame 优化渲染，避免闪烁
     requestAnimationFrame(async () => {
       try {
-        // 检查面板结构是否发生变化，如果变化则清除缓存
+        // 检查面板结构是否发生变化，如果变化则清除缓存并刷新观察器
         if (domCache.checkPanelStructureChange()) {
           domCache.clearAllCache();
           dataCache.clearAllCache();
+          // 刷新观察器以观察新的面板容器
+          unifiedObserver.refreshObserver();
         }
         
         await getAllPanelBlockIds();
@@ -642,37 +729,31 @@ function applyMultiTagHandleColor(blockElement: Element, displayColor: string, b
       if (iconValue) {
         // 检查是否为 Tabler Icons 格式（以 "ti " 开头）
         if (iconValue.startsWith('ti ')) {
-          // 只有当图标来自标签时才处理 Tabler Icons
-          if (colorSource === 'tag') {
-            // Tabler Icons 格式，使用 requestAnimationFrame 避免频繁 DOM 操作
-            requestAnimationFrame(() => {
-              const iconClasses = iconValue.split(' ').filter(cls => cls.trim() !== '');
-              
-              // 移除所有现有的 Tabler Icons 类（保留基础类）
-              const existingClasses = Array.from(handleElement.classList);
-              existingClasses.forEach(cls => {
-                if (cls.startsWith('ti-') && cls !== 'ti') {
-                  handleElement.classList.remove(cls);
-                }
-              });
-              
-              // 添加新的图标类
-              iconClasses.forEach(cls => {
-                if (cls.trim() !== '') {
-                  handleElement.classList.add(cls);
-                }
-              });
-              
-              debugLog(`块 ${currentBlockId} 的标签图标是 Tabler Icons 格式: "${iconValue}"，覆盖旧图标类`);
+          // Tabler Icons 格式，使用 requestAnimationFrame 避免频繁 DOM 操作
+          requestAnimationFrame(() => {
+            const iconClasses = iconValue.split(' ').filter(cls => cls.trim() !== '');
+            
+            // 移除所有现有的 Tabler Icons 类（包括 ti、ti- 开头的所有类）
+            const existingClasses = Array.from(handleElement.classList);
+            existingClasses.forEach(cls => {
+              if (cls === 'ti' || cls.startsWith('ti-')) {
+                handleElement.classList.remove(cls);
+              }
             });
-          } else {
-            // 自身块的图标，虎鲸笔记会自动处理，不需要我们干预
-            debugLog(`块 ${currentBlockId} 的自身块图标是 Tabler Icons 格式: "${iconValue}"，跳过处理（虎鲸笔记自动处理）`);
-          }
+            
+            // 添加新的图标类
+            iconClasses.forEach(cls => {
+              if (cls.trim() !== '') {
+                handleElement.classList.add(cls);
+              }
+            });
+            
+            debugLog(`块 ${currentBlockId} 的图标是 Tabler Icons 格式: "${iconValue}"，来源: ${colorSource}，覆盖旧图标类`);
+          });
         } else {
           // 其他格式，设置 data-icon 属性
           handleElement.setAttribute('data-icon', iconValue);
-          debugLog(`为块 ${currentBlockId} 的图标设置 data-icon="${iconValue}"`);
+          debugLog(`为块 ${currentBlockId} 的图标设置 data-icon="${iconValue}"，来源: ${colorSource}`);
         }
       } else {
         debugLog(`块 ${currentBlockId} 没有图标值，跳过设置 data-icon`);
@@ -790,19 +871,38 @@ function applyBlockHandleColor(blockElement: Element, displayColor: string, bgCo
       // 设置前景颜色（可能是 domColor 或 colorValue）
       handleElement.style.setProperty('color', displayColor, 'important');
       
-      // 设置图标属性（只处理非 Tabler Icons 格式，Tabler Icons 由 Orca 自动处理）
+      // 设置图标属性（统一处理所有格式）
       if (iconValue) {
         // 检查是否为 Tabler Icons 格式（以 "ti " 开头）
         if (iconValue.startsWith('ti ')) {
-          // Tabler Icons 格式，由 Orca 自动处理，不需要我们干预
-          debugLog(`块 ${currentBlockId} 的图标是 Tabler Icons 格式: "${iconValue}"，跳过处理（Orca 自动处理）`);
+          // Tabler Icons 格式，使用 requestAnimationFrame 避免频繁 DOM 操作
+          requestAnimationFrame(() => {
+            const iconClasses = iconValue.split(' ').filter(cls => cls.trim() !== '');
+            
+            // 移除所有现有的 Tabler Icons 类（包括 ti、ti- 开头的所有类）
+            const existingClasses = Array.from(handleElement.classList);
+            existingClasses.forEach(cls => {
+              if (cls === 'ti' || cls.startsWith('ti-')) {
+                handleElement.classList.remove(cls);
+              }
+            });
+            
+            // 添加新的图标类
+            iconClasses.forEach(cls => {
+              if (cls.trim() !== '') {
+                handleElement.classList.add(cls);
+              }
+            });
+            
+            debugLog(`块 ${currentBlockId} 的图标是 Tabler Icons 格式: "${iconValue}"，覆盖旧图标类`);
+          });
         } else {
           // 其他格式，设置 data-icon 属性
-        handleElement.setAttribute('data-icon', iconValue);
-        debugLog(`为块 ${currentBlockId} 的图标设置 data-icon="${iconValue}"`);
+          handleElement.setAttribute('data-icon', iconValue);
+          debugLog(`为块 ${currentBlockId} 的图标设置 data-icon="${iconValue}"`);
         }
       } else {
-        debugLog(`块 ${currentBlockId} 没有图标值，跳过设置 data-icon`);
+        debugLog(`块 ${currentBlockId} 没有图标值，跳过设置图标`);
       }
       // 注意：不在这里移除 data-icon，避免清理自身块设置的图标
       
@@ -970,9 +1070,11 @@ async function getBlockStyleProperties(blockId: number): Promise<{ colorValue: s
  * 读取所有面板中的容器块 data-id，并筛选出带标签且启用了颜色的块（使用缓存优化）
  */
 async function readAllPanelsContainerBlocks(viewPanels: any[]) {
-  // 检查面板结构是否发生变化，如果变化则清除DOM缓存
+  // 检查面板结构是否发生变化，如果变化则清除DOM缓存并刷新观察器
   if (domCache.checkPanelStructureChange()) {
     domCache.clearAllCache();
+    // 刷新观察器以观察新的面板容器
+    unifiedObserver.refreshObserver();
   }
   
   // 清理所有之前的观察元素
@@ -1070,10 +1172,29 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
           // 4. 检查容器块本身是否启用了颜色且有值（最高优先级）
           const blockStyleProps = await getBlockStyleProperties(blockIdNum);
           
-          // 如果容器块本身启用了颜色且有值，保持默认样式，不处理任何标签颜色
+          // 如果容器块本身启用了颜色且有值，使用自身块的颜色（最高优先级）
           if (blockStyleProps.colorEnabled && blockStyleProps.colorValue) {
-            debugLog(`容器块 ${blockIdNum} 自身有颜色，保持默认样式，跳过标签处理`);
-            return null; // 跳过处理，保持默认样式
+            debugLog(`容器块 ${blockIdNum} 自身有颜色，使用自身块颜色`);
+            
+            const finalDomColor = calculateDomColor(blockStyleProps.colorValue);
+            
+            // 如果自身块没有图标，尝试从第一个标签获取图标
+            let finalIconValue = blockStyleProps.iconValue;
+            if (!finalIconValue && validTagProps.length > 0) {
+              finalIconValue = validTagProps[0].iconValue;
+              debugLog(`容器块 ${blockIdNum} 自身无图标，使用标签图标: ${finalIconValue}`);
+            }
+            
+            return {
+              blockId: dataId,
+              aliasBlockId: blockIdNum, // 使用自身块ID
+              colorValue: blockStyleProps.colorValue,
+              iconValue: finalIconValue, // 优先使用自身图标，无图标时使用标签图标
+              colorSource: 'block' as const,
+              domColor: finalDomColor,
+              elementType: 'container' as const,
+              tagColors: [blockStyleProps.colorValue] // 单色情况
+            };
           }
           
           // 5. 如果容器块没有颜色值（未启用或值为null），检查容器块是否有图标
@@ -1440,10 +1561,11 @@ export async function load(_name: string) {
   // 启动统一观察器
   unifiedObserver.startObserver();
   
-  // 启动定期清理任务（每5分钟清理一次过期缓存）
+  // 启动定期清理任务（每5分钟清理一次过期缓存和失效DOM引用）
   cleanupInterval = setInterval(() => {
     dataCache.cleanupExpiredCache();
-    debugLog('执行定期缓存清理');
+    domCache.cleanupInvalidReferences(); // 添加DOM引用清理
+    debugLog('执行定期缓存和DOM引用清理');
   }, 5 * 60 * 1000); // 5分钟
   
   // 插件加载时延迟执行初始化（给DOM渲染留出时间）
