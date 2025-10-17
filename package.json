@@ -1,6 +1,6 @@
 {
   "name": "orca-tana-tag-color-plugin",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "为 Orca Note 中带标签的块应用 Tana 风格的颜色和图标样式",
   "type": "module",
   "author": "SaXz2",
