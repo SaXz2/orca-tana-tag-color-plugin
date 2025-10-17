@@ -209,10 +209,18 @@ function hexToRgba(hex: string, alpha: number): string {
  * @param iconValue 图标值
  */
 function applyBlockHandleColor(blockElement: Element, displayColor: string, bgColorValue: string, iconValue: string | null) {
-  // 查找 .orca-block-handle.ti.ti-point-filled 和 .orca-block-handle.ti.ti-photo 元素
+  // 查找当前块的无序点元素
   const handleElements = blockElement.querySelectorAll('.orca-block-handle.ti.ti-point-filled, .orca-block-handle.ti.ti-photo');
   
+  // 获取当前块的data-id
+  const currentBlockId = blockElement.getAttribute('data-id');
+  
   handleElements.forEach(handleElement => {
+    // 检查这个无序点是否属于当前块（不是子块）
+    const handleParentBlock = handleElement.closest('.orca-block.orca-container');
+    if (handleParentBlock && handleParentBlock.getAttribute('data-id') !== currentBlockId) {
+      return; // 跳过子块的无序点
+    }
     if (handleElement instanceof HTMLElement) {
       // 设置前景颜色（可能是 domColor 或 colorValue）
       handleElement.style.setProperty('color', displayColor, 'important');
@@ -590,22 +598,6 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
     
     // 只输出启用了颜色的容器块（包含块ID、标签名、别名块ID、颜色值、图标值和DOM颜色）
     if (taggedBlocks.length > 0) {
-      debugLog(`当前面板 [${panelId}] 的启用颜色的容器块:`, taggedBlocks);
-      
-      // 显示启用颜色的容器块的引用信息
-      for (const block of taggedBlocks) {
-        try {
-          const blockIdNum = parseInt(block.blockId, 10);
-          const blockData = await orca.invokeBackend("get-block", blockIdNum);
-          debugLog(`启用颜色的容器块 ${block.blockId} 的引用信息:`, {
-            refs: blockData.refs,
-            backRefs: blockData.backRefs
-          });
-        } catch (error) {
-          debugError(`获取块 ${block.blockId} 引用信息失败:`, error);
-        }
-      }
-      
       // 获取插件设置
       const settings = orca.state.plugins[pluginName]?.settings;
       const useDomColor = settings?.useDomColor ?? false;
