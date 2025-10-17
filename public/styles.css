@@ -1,26 +1,35 @@
 /* Tana 标签颜色插件 - 兼容性样式 */
 
-/* 确保文本块的无序点在非折叠和非悬停状态下完全不透明 */
-[data-type="text"]>.orca-repr>.orca-repr-main>.orca-repr-text-content+.orca-repr-main-none-editable>.orca-block-handle.ti-point-filled:not(.orca-block-handle-collapsed, :hover) {
-    opacity: 1 !important;
+/* 多标签分割背景样式 */
+.orca-block-handle {
+    /* 确保背景图片正确显示 */
+    background-size: cover !important;
+    background-position: center !important;
+    background-repeat: no-repeat !important;
 }
 
-/* 确保所有非长文本块的无序点完全不透明 */
-:not(.orca-long-form) .orca-block-handle {
-    opacity: 1 !important;
-}
-
-/* 针对容器块的无序点，确保完全不透明 */
-.orca-container .orca-block-handle.ti-point-filled:not(.orca-block-handle-collapsed) {
-    opacity: 1 !important;
-}
-
-/* 针对所有带标签的块的无序点 */
-.orca-block[data-id] .orca-block-handle.ti-point-filled:not(.orca-block-handle-collapsed, :hover) {
-    opacity: 1 !important;
+/* 针对多标签的圆形分割效果优化 */
+.orca-block-handle[style*="conic-gradient"] {
+    /* 确保圆形分割效果正确显示 */
+    border-radius: 50% !important;
 }
 
 /* 多标签 orca-block-handle 的 :before 伪元素混合模式 */
 .orca-block-handle-collapsed:before {
     mix-blend-mode: overlay;
+}
+
+/* 图标样式优化 */
+.orca-block-handle[data-icon]:not(:hover) {
+    width: 1rem;
+    display: inline-flex;
+    justify-content: center;
+}
+
+/* 覆盖暗色模式下的默认样式 */
+@media (prefers-color-scheme: dark) {
+    .orca-block-handle-collapsed:not(:hover) {
+        background-color: unset !important;
+        color: unset !important;
+    }
 }
