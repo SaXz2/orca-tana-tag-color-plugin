@@ -167,6 +167,14 @@ async function initializeWithRetry() {
 }
 
 /**
+ * 根据colorValue计算domColor
+ * 使用公式: oklch(from colorValue calc(1.3 * l) c h)
+ */
+function calculateDomColor(colorValue: string): string {
+  return `oklch(from ${colorValue} calc(1.3 * l) c h)`;
+}
+
+/**
  * 将十六进制颜色转换为带透明度的 rgba 格式
  */
 function hexToRgba(hex: string, alpha: number): string {
@@ -334,7 +342,7 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
     // 在该面板内查询所有容器块元素
     const containerElements = panelElement.querySelectorAll('.orca-block.orca-container');
     
-    // 筛选出带标签的容器块，并获取第一个标签名
+    // 筛选出带标签的容器块，以及自身设置了_color的容器块
     const taggedBlocksPromises: Promise<{ 
       blockId: string; 
       firstTag: string; 
@@ -350,80 +358,108 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
       const reprMainElement = element.querySelector('.orca-repr-main');
       
       if (reprMainElement) {
+        const dataId = element.getAttribute('data-id');
+        if (!dataId) return;
+        
         // 检查 .orca-repr-main 下是否有 .orca-tags
         const tagsElement = reprMainElement.querySelector('.orca-tags');
+        const hasTags = tagsElement && tagsElement.querySelector('.orca-tag');
         
-        if (tagsElement) {
-          // 获取第一个 .orca-tag 元素
-          const firstTagElement = tagsElement.querySelector('.orca-tag');
-          
-          if (firstTagElement) {
-            const dataId = element.getAttribute('data-id');
-            const firstTagName = firstTagElement.getAttribute('data-name');
-            
-            // 读取 DOM 上标签的实际颜色样式
-            const computedStyle = window.getComputedStyle(firstTagElement);
-            const domColor = computedStyle.color;
-            
-            if (dataId && firstTagName) {
-              // 异步获取块本身和标签的颜色属性
-              const promise = (async () => {
-                try {
-                  const blockIdNum = parseInt(dataId, 10);
-                  
-                  // 1. 首先获取标签的别名块ID（因为图标总是从标签读取）
-                  const result = await orca.invokeBackend("get-blockid-by-alias", firstTagName);
-                  const aliasBlockId = result?.id ?? null;
-                  
-                  if (aliasBlockId == null) {
-                    return null; // 没有找到别名块，跳过
-                  }
-                  
-                  // 2. 获取标签的属性（用于读取图标，可能还需要读取颜色）
-                  const tagStyleProps = await getBlockStyleProperties(aliasBlockId);
-                  
-                  // 3. 检查容器块本身是否启用了颜色且有值（最高优先级）
-                  const blockStyleProps = await getBlockStyleProperties(blockIdNum);
-                  
-                  // 如果容器块本身启用了颜色且有值，使用容器块的颜色 + 标签的图标
-                  if (blockStyleProps.colorEnabled && blockStyleProps.colorValue) {
-                    const finalDomColor = domColor;
-                    
-                    return {
-                      blockId: dataId,
-                      firstTag: firstTagName,
-                      aliasBlockId: aliasBlockId,
-                      colorValue: blockStyleProps.colorValue,
-                      iconValue: tagStyleProps.iconValue, // 图标从标签读取
-                      colorSource: 'block' as const,
-                      domColor: finalDomColor
-                    };
-                  }
-                  
-                  // 4. 如果容器块没有颜色值（未启用或值为null），使用标签的颜色 + 标签的图标
-                  if (!tagStyleProps.colorEnabled || !tagStyleProps.colorValue) {
-                    return null; // 标签也未启用颜色或没有颜色值，跳过
-                  }
-                  
-                  const finalDomColor = domColor;
-                  
-                  return {
-                    blockId: dataId,
-                    firstTag: firstTagName,
-                    aliasBlockId: aliasBlockId,
-                    colorValue: tagStyleProps.colorValue,
-                    iconValue: tagStyleProps.iconValue, // 图标从标签读取
-                    colorSource: 'tag' as const,
-                    domColor: finalDomColor
-                  };
-                } catch (error) {
-                  return null;
-                }
-              })();
+        if (hasTags) {
+          // 有标签的情况：使用标签处理逻辑
+          const promise = (async () => {
+            try {
+              const blockIdNum = parseInt(dataId, 10);
               
-              taggedBlocksPromises.push(promise);
+              // 1. 获取块的完整信息（包含refs）
+              const blockData = await orca.invokeBackend("get-block", blockIdNum);
+              
+              // 2. 从refs中获取firstTag和aliasBlockId
+              if (!blockData.refs || blockData.refs.length === 0) {
+                return null; // 没有引用信息，跳过
+              }
+              
+              const firstRef = blockData.refs[0];
+              const firstTagFromRef = firstRef.alias;
+              const aliasBlockId = firstRef.to;
+              
+              if (!firstTagFromRef || !aliasBlockId) {
+                return null; // 引用信息不完整，跳过
+              }
+              
+              // 3. 获取标签的属性（用于读取图标，可能还需要读取颜色）
+              const tagStyleProps = await getBlockStyleProperties(aliasBlockId);
+              
+              // 4. 检查容器块本身是否启用了颜色且有值（最高优先级）
+              const blockStyleProps = await getBlockStyleProperties(blockIdNum);
+              
+              // 如果容器块本身启用了颜色且有值，使用容器块的颜色 + 标签的图标
+              if (blockStyleProps.colorEnabled && blockStyleProps.colorValue) {
+                const finalDomColor = calculateDomColor(blockStyleProps.colorValue);
+                
+                return {
+                  blockId: dataId,
+                  firstTag: firstTagFromRef, // 使用从refs获取的标签名
+                  aliasBlockId: aliasBlockId, // 使用从refs获取的块ID
+                  colorValue: blockStyleProps.colorValue,
+                  iconValue: tagStyleProps.iconValue, // 图标从标签读取
+                  colorSource: 'block' as const,
+                  domColor: finalDomColor
+                };
+              }
+              
+              // 5. 如果容器块没有颜色值（未启用或值为null），使用标签的颜色 + 标签的图标
+              if (!tagStyleProps.colorEnabled || !tagStyleProps.colorValue) {
+                return null; // 标签也未启用颜色或没有颜色值，跳过
+              }
+              
+              const finalDomColor = calculateDomColor(tagStyleProps.colorValue);
+              
+              return {
+                blockId: dataId,
+                firstTag: firstTagFromRef, // 使用从refs获取的标签名
+                aliasBlockId: aliasBlockId, // 使用从refs获取的块ID
+                colorValue: tagStyleProps.colorValue,
+                iconValue: tagStyleProps.iconValue, // 图标从标签读取
+                colorSource: 'tag' as const,
+                domColor: finalDomColor
+              };
+            } catch (error) {
+              return null;
             }
-          }
+          })();
+          
+          taggedBlocksPromises.push(promise);
+        } else {
+          // 没有标签的情况：检查是否自身设置了_color
+          const promise = (async () => {
+            try {
+              const blockIdNum = parseInt(dataId, 10);
+              
+              // 检查容器块自身是否设置了_color属性
+              const blockStyleProps = await getBlockStyleProperties(blockIdNum);
+              
+              if (blockStyleProps.colorEnabled && blockStyleProps.colorValue) {
+                const finalDomColor = calculateDomColor(blockStyleProps.colorValue);
+                
+                return {
+                  blockId: dataId,
+                  firstTag: '', // 没有标签
+                  aliasBlockId: blockIdNum, // 使用自身块ID
+                  colorValue: blockStyleProps.colorValue,
+                  iconValue: blockStyleProps.iconValue, // 从自身读取图标
+                  colorSource: 'block' as const,
+                  domColor: finalDomColor
+                };
+              }
+              
+              return null; // 没有启用颜色，跳过
+            } catch (error) {
+              return null;
+            }
+          })();
+          
+          taggedBlocksPromises.push(promise);
         }
       }
     });
@@ -463,6 +499,20 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
     // 只输出启用了颜色的容器块（包含块ID、标签名、别名块ID、颜色值、图标值和DOM颜色）
     if (taggedBlocks.length > 0) {
       debugLog(`当前面板 [${panelId}] 的启用颜色的容器块:`, taggedBlocks);
+      
+      // 显示启用颜色的容器块的引用信息
+      for (const block of taggedBlocks) {
+        try {
+          const blockIdNum = parseInt(block.blockId, 10);
+          const blockData = await orca.invokeBackend("get-block", blockIdNum);
+          debugLog(`启用颜色的容器块 ${block.blockId} 的引用信息:`, {
+            refs: blockData.refs,
+            backRefs: blockData.backRefs
+          });
+        } catch (error) {
+          debugError(`获取块 ${block.blockId} 引用信息失败:`, error);
+        }
+      }
       
       // 获取插件设置
       const settings = orca.state.plugins[pluginName]?.settings;
