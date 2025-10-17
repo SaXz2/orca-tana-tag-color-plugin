@@ -9,3 +9,17 @@
     opacity: 1 !important;
 }
 
+/* 多标签分割背景样式 */
+.orca-block-handle {
+    /* 确保背景图片正确显示 */
+    background-size: cover !important;
+    background-position: center !important;
+    background-repeat: no-repeat !important;
+}
+
+/* 针对多标签的圆形分割效果优化 */
+.orca-block-handle[style*="conic-gradient"] {
+    /* 确保圆形分割效果正确显示 */
+    border-radius: 50% !important;
+}
+
