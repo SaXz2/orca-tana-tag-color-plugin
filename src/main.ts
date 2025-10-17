@@ -209,12 +209,14 @@ function hexToRgba(hex: string, alpha: number): string {
  * @param iconValue 图标值
  */
 function applyBlockHandleColor(blockElement: Element, displayColor: string, bgColorValue: string, iconValue: string | null) {
-  // 查找当前块的所有图标元素
+  // 查找当前块的所有图标元素和标题元素
   const handleElements = blockElement.querySelectorAll('.orca-block-handle');
+  const titleElements = blockElement.querySelectorAll('.orca-repr-title');
   
   // 获取当前块的data-id
   const currentBlockId = blockElement.getAttribute('data-id');
   
+  // 处理图标元素
   handleElements.forEach(handleElement => {
     // 检查这个图标是否属于当前块（不是子块）
     const handleParentBlock = handleElement.closest('.orca-block.orca-container');
@@ -242,6 +244,19 @@ function applyBlockHandleColor(blockElement: Element, displayColor: string, bgCo
         // 确保非折叠状态下完全不透明
         handleElement.style.setProperty('opacity', '1', 'important');
       }
+    }
+  });
+  
+  // 处理标题元素
+  titleElements.forEach(titleElement => {
+    // 检查这个标题是否属于当前块（不是子块）
+    const titleParentBlock = titleElement.closest('.orca-block.orca-container');
+    if (titleParentBlock && titleParentBlock.getAttribute('data-id') !== currentBlockId) {
+      return; // 跳过子块的标题
+    }
+    if (titleElement instanceof HTMLElement) {
+      // 只设置前景颜色（标题不需要图标和背景色）
+      titleElement.style.setProperty('color', displayColor, 'important');
     }
   });
 }
@@ -594,6 +609,14 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
           handleElement.style.removeProperty('background-color');
           handleElement.style.removeProperty('opacity');
           handleElement.removeAttribute('data-icon');
+        }
+      });
+      
+      // 清除标题样式
+      const titleElements = element.querySelectorAll('.orca-repr-title');
+      titleElements.forEach(titleElement => {
+        if (titleElement instanceof HTMLElement) {
+          titleElement.style.removeProperty('color');
         }
       });
     });
