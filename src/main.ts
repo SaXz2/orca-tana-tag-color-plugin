@@ -109,6 +109,7 @@ class DOMCache {
   private panelElementsCache = new Map<string, Element | null>();
   private containerElementsCache = new Map<string, NodeListOf<Element>>();
   private lastPanelStructureHash = '';
+  private processingBlocks = new Set<number>(); // 正在处理的块ID集合
   
   /**
    * 获取面板元素（带缓存，内存泄漏防护）
@@ -176,6 +177,28 @@ class DOMCache {
     this.panelElementsCache.clear();
     this.containerElementsCache.clear();
     this.lastPanelStructureHash = '';
+    this.processingBlocks.clear();
+  }
+
+  /**
+   * 检查块是否正在处理中
+   */
+  isBlockProcessing(blockId: number): boolean {
+    return this.processingBlocks.has(blockId);
+  }
+
+  /**
+   * 标记块开始处理
+   */
+  markBlockProcessing(blockId: number): void {
+    this.processingBlocks.add(blockId);
+  }
+
+  /**
+   * 标记块处理完成
+   */
+  markBlockProcessed(blockId: number): void {
+    this.processingBlocks.delete(blockId);
   }
   
   /**
@@ -536,6 +559,23 @@ function debugLog(...args: any[]) {
   if (settings?.debugMode) {
     console.log('[Tana Tag Color Plugin]', ...args);
   }
+}
+
+/**
+ * 性能日志辅助函数（仅在调试模式下输出）
+ */
+function perfLog(...args: any[]) {
+  const settings = orca.state.plugins[pluginName]?.settings;
+  if (settings?.debugMode) {
+    console.log('[Tana Tag Color Plugin] [PERF]', ...args);
+  }
+}
+
+/**
+ * 错误日志辅助函数（总是输出）
+ */
+function errorLog(...args: any[]) {
+  console.warn('[Tana Tag Color Plugin] [ERROR]', ...args);
 }
 
 /**
@@ -970,7 +1010,8 @@ function applyMultiTagHandleColor(blockElement: Element, displayColor: string, b
             debugLog(`为块 ${currentBlockId} 的图标设置 data-icon="${iconValue}"，来源: ${colorSource}`);
           }
         } else {
-          debugLog(`块 ${currentBlockId} 没有图标值，跳过设置 data-icon`);
+          // 减少重复日志输出
+          perfLog(`块 ${currentBlockId} 没有图标值，跳过设置 data-icon`);
         }
         
         // 根据标签数量决定处理方式
@@ -1132,7 +1173,8 @@ function applyBlockHandleColor(blockElement: Element, displayColor: string, bgCo
           debugLog(`为块 ${currentBlockId} 的图标设置 data-icon="${iconValue}"`);
         }
       } else {
-        debugLog(`块 ${currentBlockId} 没有图标值，跳过设置图标`);
+        // 减少重复日志输出
+        perfLog(`块 ${currentBlockId} 没有图标值，跳过设置图标`);
       }
       // 注意：不在这里移除 data-icon，避免清理自身块设置的图标
       
@@ -1546,7 +1588,8 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
           
           const finalDomColor = calculateDomColor(validTagColors[0]);
           
-          debugLog(`标签块图标处理:`, {
+          // 减少重复日志输出，只在调试模式下显示详细信息
+          perfLog(`标签块图标处理:`, {
             标签图标: firstTagProps.iconValue,
             标签图标启用: firstTagProps.iconEnabled,
             标签颜色数量: validTagColors.length
@@ -1707,7 +1750,8 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
       tagColors: string[];
     } => item !== null);
     
-    debugLog(`面板 [${panelId}] 异步处理完成:`, {
+    // 减少日志输出，只在调试模式下显示详细信息
+    perfLog(`面板 [${panelId}] 异步处理完成:`, {
       总处理数量: allResults.length,
       成功处理数量: taggedBlocks.length,
       失败数量: allResults.length - taggedBlocks.length
@@ -1748,8 +1792,8 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
       });
     }
     
-    // 调试信息：显示处理结果
-    debugLog(`面板 [${panelId}] 处理完成:`, {
+    // 调试信息：显示处理结果（减少日志输出）
+    perfLog(`面板 [${panelId}] 处理完成:`, {
       找到的容器块数量: containerElements.length,
       启用了颜色的块数量: taggedBlocks.length,
       启用了颜色的块: taggedBlocks.map(block => ({
