@@ -220,6 +220,179 @@ class DOMCache {
 }
 
 /**
+ * 样式变化检测管理类
+ * 实现"检测三次"逻辑，避免不必要的样式应用
+ */
+class StyleChangeDetector {
+  private elementStyleStates = new Map<Element, {
+    expectedStyles: {
+      color: string;
+      backgroundColor: string;
+      backgroundImage: string;
+      opacity: string;
+      dataIcon: string;
+    };
+    appliedStyles: {
+      color: string;
+      backgroundColor: string;
+      backgroundImage: string;
+      opacity: string;
+      dataIcon: string;
+    };
+    changeCount: number;
+    lastChangeTime: number;
+    isStable: boolean; // 是否稳定（连续三次无变化）
+  }>();
+  
+  private readonly MAX_CHANGE_COUNT = 3; // 最大变化检测次数
+  private readonly STABLE_THRESHOLD = 200; // 稳定状态阈值（毫秒）- 降低阈值，更快进入稳定状态
+  
+  /**
+   * 获取元素当前应用的样式状态
+   */
+  private getElementAppliedStyleState(element: HTMLElement): {
+    color: string;
+    backgroundColor: string;
+    backgroundImage: string;
+    opacity: string;
+    dataIcon: string;
+  } {
+    return {
+      color: element.style.color || '',
+      backgroundColor: element.style.backgroundColor || '',
+      backgroundImage: element.style.backgroundImage || '',
+      opacity: element.style.opacity || '',
+      dataIcon: element.getAttribute('data-icon') || ''
+    };
+  }
+  
+  /**
+   * 记录期望的样式状态
+   */
+  recordExpectedStyles(element: Element, expectedStyles: {
+    color: string;
+    backgroundColor: string;
+    backgroundImage: string;
+    opacity: string;
+    dataIcon: string;
+  }): void {
+    if (!(element instanceof HTMLElement)) return;
+    
+    const appliedStyles = this.getElementAppliedStyleState(element);
+    
+    this.elementStyleStates.set(element, {
+      expectedStyles,
+      appliedStyles,
+      changeCount: 0,
+      lastChangeTime: performance.now(),
+      isStable: false
+    });
+    
+    debugLog(`记录元素期望样式:`, expectedStyles);
+  }
+  
+  /**
+   * 检查样式是否需要重新应用
+   */
+  needsStyleUpdate(element: Element): boolean {
+    if (!(element instanceof HTMLElement)) return false;
+    
+    const cachedState = this.elementStyleStates.get(element);
+    
+    if (!cachedState) {
+      // 首次检测，总是需要更新
+      debugLog(`元素首次检测，需要更新样式`);
+      return true;
+    }
+    
+    const currentAppliedStyles = this.getElementAppliedStyleState(element);
+    
+    // 检查应用的样式是否与期望的样式一致
+    const stylesMatch = (
+      cachedState.expectedStyles.color === currentAppliedStyles.color &&
+      cachedState.expectedStyles.backgroundColor === currentAppliedStyles.backgroundColor &&
+      cachedState.expectedStyles.backgroundImage === currentAppliedStyles.backgroundImage &&
+      cachedState.expectedStyles.opacity === currentAppliedStyles.opacity &&
+      cachedState.expectedStyles.dataIcon === currentAppliedStyles.dataIcon
+    );
+    
+    if (!stylesMatch) {
+      // 样式不匹配，需要更新
+      cachedState.changeCount = 0;
+      cachedState.lastChangeTime = performance.now();
+      cachedState.isStable = false;
+      debugLog(`元素样式不匹配，需要更新样式`);
+      return true;
+    } else {
+      // 样式匹配，增加稳定计数
+      cachedState.changeCount++;
+      const now = performance.now();
+      
+      // 如果连续检测到样式匹配，标记为稳定状态
+      if (cachedState.changeCount >= this.MAX_CHANGE_COUNT) {
+        cachedState.isStable = true;
+        cachedState.lastChangeTime = now; // 更新稳定时间
+        debugLog(`元素样式稳定，连续${this.MAX_CHANGE_COUNT}次匹配`);
+      }
+      
+      // 检查是否应该停止检测（稳定且超过阈值时间）
+      if (cachedState.isStable && (now - cachedState.lastChangeTime) > this.STABLE_THRESHOLD) {
+        debugLog(`元素样式长期稳定，跳过更新`);
+        return false;
+      }
+      
+      // 关键修复：样式匹配时，如果尚未达到稳定状态，仍然需要更新
+      // 但如果已经达到稳定状态，则不需要更新
+      if (cachedState.isStable) {
+        debugLog(`元素样式已稳定，跳过更新`);
+        return false;
+      }
+      
+      // 样式匹配但尚未稳定，需要继续更新直到稳定
+      debugLog(`样式匹配但尚未稳定，继续更新 (${cachedState.changeCount}/${this.MAX_CHANGE_COUNT})`);
+      return true;
+    }
+  }
+  
+  /**
+   * 强制重置元素的检测状态（当DOM结构发生重大变化时调用）
+   */
+  forceResetElementDetection(element: Element): void {
+    this.elementStyleStates.delete(element);
+    debugLog(`强制重置元素检测状态`);
+  }
+  
+  /**
+   * 清理失效的元素引用
+   */
+  cleanupInvalidElements(): void {
+    const invalidElements: Element[] = [];
+    
+    for (const [element] of this.elementStyleStates.entries()) {
+      if (!document.contains(element)) {
+        invalidElements.push(element);
+      }
+    }
+    
+    invalidElements.forEach(element => {
+      this.elementStyleStates.delete(element);
+    });
+    
+    if (invalidElements.length > 0) {
+      debugLog(`清理了${invalidElements.length}个失效的样式检测引用`);
+    }
+  }
+  
+  /**
+   * 清除所有样式状态
+   */
+  clearAllStates(): void {
+    this.elementStyleStates.clear();
+    debugLog('清除所有样式状态');
+  }
+}
+
+/**
  * 统一MutationObserver管理类
  * 使用单一观察器替代多个独立观察器，提升性能和稳定性
  */
@@ -233,6 +406,9 @@ class UnifiedObserverManager {
     colorSource?: 'block' | 'tag'; // 添加颜色来源
   }>();
   private retryTimer: ReturnType<typeof setTimeout> | null = null; // 添加重试定时器跟踪
+  private styleChangeDetector = new StyleChangeDetector(); // 添加样式变化检测器
+  private lastUpdateTime = 0; // 添加最后更新时间
+  private readonly UPDATE_THROTTLE = 100; // 更新节流时间（毫秒）
   
   /**
    * 启动统一观察器（优化版本：只观察面板容器）
@@ -246,11 +422,38 @@ class UnifiedObserverManager {
       // 批量处理所有变化，避免频繁重绘
       const elementsToUpdate = new Set<Element>();
       
-      mutations.forEach(mutation => {
+      // 优化：过滤掉不重要的变化
+      const significantMutations = mutations.filter(mutation => {
+        // 只关注class属性的变化和子节点的添加/删除
+        if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
+          return true;
+        }
+        if (mutation.type === 'childList' && (mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0)) {
+          return true;
+        }
+        return false;
+      });
+      
+      // 如果没有重要变化，直接返回
+      if (significantMutations.length === 0) {
+        return;
+      }
+      
+      significantMutations.forEach(mutation => {
         if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
           const target = mutation.target as Element;
           const containerBlock = target.closest('.orca-block.orca-container');
           if (containerBlock && this.observedElements.has(containerBlock)) {
+            // 关键修复：只在真正的结构变化时才重置，而不是每次class变化都重置
+            // 检查是否是重要的class变化（如折叠/展开状态变化）
+            const targetClasses = target.classList.toString();
+            const isImportantChange = targetClasses.includes('orca-block-handle-collapsed') || 
+                                    targetClasses.includes('orca-block-handle-expanded');
+            
+            if (isImportantChange) {
+              debugLog(`检测到重要的class变化，重置检测状态`);
+              this.styleChangeDetector.forceResetElementDetection(containerBlock);
+            }
             elementsToUpdate.add(containerBlock);
           }
         } else if (mutation.type === 'childList') {
@@ -260,6 +463,9 @@ class UnifiedObserverManager {
               const element = node as Element;
               const containerBlock = element.closest('.orca-block.orca-container');
               if (containerBlock && this.observedElements.has(containerBlock)) {
+                // 子节点变化确实是结构变化，需要重置
+                debugLog(`检测到子节点变化，重置检测状态`);
+                this.styleChangeDetector.forceResetElementDetection(containerBlock);
                 elementsToUpdate.add(containerBlock);
               }
             }
@@ -267,8 +473,22 @@ class UnifiedObserverManager {
         }
       });
       
-      // 批量更新所有需要更新的元素
+      // 添加更新节流，避免过于频繁的更新
+      const now = performance.now();
+      if (now - this.lastUpdateTime < this.UPDATE_THROTTLE) {
+        debugLog(`更新频率过高，跳过本次更新`);
+        return;
+      }
+      this.lastUpdateTime = now;
+      
+      // 批量更新所有需要更新的元素（使用样式变化检测器优化）
       elementsToUpdate.forEach(element => {
+        // 使用样式变化检测器判断是否需要更新
+        if (!this.styleChangeDetector.needsStyleUpdate(element)) {
+          debugLog(`元素样式稳定，跳过更新`);
+          return;
+        }
+        
         const config = this.observedElements.get(element);
         if (config) {
           // 根据标签数量决定使用哪个函数
@@ -277,8 +497,19 @@ class UnifiedObserverManager {
             applyMultiTagHandleColor(element, config.displayColor, config.bgColorValue, config.iconValue, config.tagColors, config.colorSource || 'tag');
           } else {
             // 单标签：使用原有的单标签处理函数
-          applyBlockHandleColor(element, config.displayColor, config.bgColorValue, config.iconValue);
+            applyBlockHandleColor(element, config.displayColor, config.bgColorValue, config.iconValue);
           }
+          
+          // 记录期望的样式状态，用于后续检测
+          this.styleChangeDetector.recordExpectedStyles(element, {
+            color: config.displayColor,
+            backgroundColor: config.bgColorValue,
+            backgroundImage: '', // 这个会在应用函数中设置
+            opacity: '1',
+            dataIcon: config.iconValue || ''
+          });
+          
+          debugLog(`应用样式更新到元素`);
         }
       });
     });
@@ -370,6 +601,7 @@ class UnifiedObserverManager {
     }
     
     this.observedElements.clear();
+    this.styleChangeDetector.clearAllStates();
   }
   
   /**
@@ -377,6 +609,14 @@ class UnifiedObserverManager {
    */
   clearAllObservedElements(): void {
     this.observedElements.clear();
+    this.styleChangeDetector.clearAllStates();
+  }
+  
+  /**
+   * 清理失效的样式检测引用
+   */
+  cleanupInvalidStyleReferences(): void {
+    this.styleChangeDetector.cleanupInvalidElements();
   }
 }
 
@@ -1719,7 +1959,8 @@ export async function load(_name: string) {
   cleanupInterval = setInterval(() => {
     dataCache.cleanupExpiredCache();
     domCache.cleanupInvalidReferences(); // 添加DOM引用清理
-    debugLog('执行定期缓存和DOM引用清理');
+    unifiedObserver.cleanupInvalidStyleReferences(); // 添加样式检测引用清理
+    debugLog('执行定期缓存、DOM引用和样式检测清理');
   }, 5 * 60 * 1000); // 5分钟
   
   // 插件加载时延迟执行初始化（给DOM渲染留出时间）
