@@ -209,17 +209,17 @@ function hexToRgba(hex: string, alpha: number): string {
  * @param iconValue 图标值
  */
 function applyBlockHandleColor(blockElement: Element, displayColor: string, bgColorValue: string, iconValue: string | null) {
-  // 查找当前块的无序点元素
-  const handleElements = blockElement.querySelectorAll('.orca-block-handle.ti.ti-point-filled, .orca-block-handle.ti.ti-photo');
+  // 查找当前块的所有图标元素
+  const handleElements = blockElement.querySelectorAll('.orca-block-handle');
   
   // 获取当前块的data-id
   const currentBlockId = blockElement.getAttribute('data-id');
   
   handleElements.forEach(handleElement => {
-    // 检查这个无序点是否属于当前块（不是子块）
+    // 检查这个图标是否属于当前块（不是子块）
     const handleParentBlock = handleElement.closest('.orca-block.orca-container');
     if (handleParentBlock && handleParentBlock.getAttribute('data-id') !== currentBlockId) {
-      return; // 跳过子块的无序点
+      return; // 跳过子块的图标
     }
     if (handleElement instanceof HTMLElement) {
       // 设置前景颜色（可能是 domColor 或 colorValue）
@@ -399,13 +399,18 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
               // 1. 获取块的完整信息（包含refs）
               const blockData = await orca.invokeBackend("get-block", blockIdNum);
               
-              // 2. 从refs中获取aliasBlockId
+              // 2. 从refs中获取第一个type=2的标签引用
               if (!blockData.refs || blockData.refs.length === 0) {
                 return null; // 没有引用信息，跳过
               }
               
-              const firstRef = blockData.refs[0];
-              const aliasBlockId = firstRef.to;
+              // 找到第一个type=2的引用（标签）
+              const firstTagRef = blockData.refs.find((ref: any) => ref.type === 2);
+              if (!firstTagRef) {
+                return null; // 没有标签引用，跳过
+              }
+              
+              const aliasBlockId = firstTagRef.to;
               
               if (!aliasBlockId) {
                 return null; // 引用信息不完整，跳过
@@ -525,8 +530,13 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
                 return null; // 没有引用信息，跳过
               }
               
-              const firstRef = blockData.refs[0];
-              const aliasBlockId = firstRef.to;
+              // 找到第一个type=2的引用（标签）
+              const firstTagRef = blockData.refs.find((ref: any) => ref.type === 2);
+              if (!firstTagRef) {
+                return null; // 没有标签引用，跳过
+              }
+              
+              const aliasBlockId = firstTagRef.to;
               
               if (!aliasBlockId) {
                 return null; // 引用信息不完整，跳过
@@ -577,7 +587,7 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
     // 先清除当前面板的所有容器块样式
     const allContainerElements = panelElement.querySelectorAll('.orca-block.orca-container');
     allContainerElements.forEach((element) => {
-      const handleElements = element.querySelectorAll('.orca-block-handle.ti.ti-point-filled, .orca-block-handle.ti.ti-photo');
+      const handleElements = element.querySelectorAll('.orca-block-handle');
       handleElements.forEach(handleElement => {
         if (handleElement instanceof HTMLElement) {
           handleElement.style.removeProperty('color');
