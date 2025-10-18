@@ -47,6 +47,13 @@ jobs:
         zip -r ../orca-tana-tag-color-plugin-v${{ steps.package-version.outputs.VERSION }}.zip .
         cd ..
         
+    - name: Delete existing release if exists
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # 删除已存在的Release（如果存在）
+        gh release delete "v${{ steps.package-version.outputs.VERSION }}" --yes || echo "Release v${{ steps.package-version.outputs.VERSION }} does not exist, continuing..."
+        
     - name: Create Release
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
