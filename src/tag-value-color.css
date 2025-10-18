@@ -1,0 +1,4 @@
+/* 标签值颜色样式 */
+span.orca-tag-value.orca-tag-value-compact {
+    color: var(--orca-color-text-2) !important;
+}
