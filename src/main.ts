@@ -1599,17 +1599,9 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
             .filter(props => props.colorEnabled && props.colorValue)
             .map(props => props.colorValue!);
           
+          // 如果标签没有颜色，返回null，让系统使用原生样式
           if (validTagColors.length === 0) {
-          return {
-            blockId: dataId,
-              aliasBlockId: firstTagProps.blockId,
-            colorValue: '#666666', // 使用默认颜色
-            iconValue: blockStyleProps.iconValue, // 使用容器块自身的图标
-            colorSource: 'block' as const,
-            domColor: calculateDomColor('#666666'),
-              elementType: 'container' as const,
-              tagColors: ['#666666'] // 单色情况
-            };
+            return null;
           }
           
           return {
@@ -1631,27 +1623,8 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
           .map(props => props.colorValue!);
         
         if (validTagColors.length === 0) {
-          // 如果标签既没有颜色也没有图标，跳过
-          const hasAnyIcon = validTagProps.some(props => props.iconEnabled && props.iconValue);
-          if (!hasAnyIcon) {
-            return null;
-          }
-          // 如果标签有图标但没有颜色，使用默认颜色处理
-          debugLog(`面板 ${panelId} 标签块只有图标没有颜色:`, {
-            标签图标: firstTagProps.iconValue,
-            标签图标启用: firstTagProps.iconEnabled
-          });
-          
-          return {
-            blockId: dataId,
-            aliasBlockId: firstTagProps.blockId,
-            colorValue: '#666666', // 使用默认颜色
-            iconValue: firstTagProps.iconValue,
-            colorSource: 'tag' as const,
-            domColor: calculateDomColor('#666666'),
-            elementType: 'container' as const,
-            tagColors: ['#666666'] // 单色情况
-          };
+          // 如果标签没有颜色，返回null，让系统使用原生样式
+          return null;
         }
         
         const finalDomColor = calculateDomColor(validTagColors[0]);
@@ -1698,7 +1671,12 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
           };
         }
         
-        // 没有标签且没有自身颜色，清理样式
+        // 如果自身设置了图标但没有颜色，不清理样式，让系统使用原生图标
+        if (blockStyleProps.iconEnabled && blockStyleProps.iconValue) {
+          return null; // 不处理，保留原生图标
+        }
+        
+        // 没有标签且没有自身颜色和图标，清理样式
         cleanupBlockStyles(element);
         return null; // 没有启用颜色，跳过
       } catch (error) {

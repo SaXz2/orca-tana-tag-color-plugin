@@ -2,10 +2,7 @@
 
 
 
-/* 多标签 orca-block-handle 的 :before 伪元素混合模式 */
-.orca-block-handle-collapsed:before {
-    mix-blend-mode: overlay;
-}
+
 
 /* 图标样式优化 */
 .orca-block-handle[data-icon]:not(:hover) {
@@ -14,10 +11,15 @@
     justify-content: center;
 }
 
+/* 多标签 orca-block-handle 的 :before 伪元素混合模式 */
+.orca-block-handle-collapsed:before {
+    mix-blend-mode: overlay;
+}
+
 /* 覆盖暗色模式下的默认样式 */
 @media (prefers-color-scheme: dark) {
     .orca-block-handle-collapsed:not(:hover) {
-        background-color: unset !important;
-        color: unset !important;
+        background-color: unset ;
+        color: unset;
     }
 }
