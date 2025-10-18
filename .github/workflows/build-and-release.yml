@@ -20,7 +20,6 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: '18'
-        cache: false  # 禁用缓存，因为我们手动清理依赖
         
     - name: Clean npm cache and install dependencies
       run: |
