@@ -1007,7 +1007,7 @@ function applyMultiTagHandleColor(blockElement: Element, displayColor: string, b
         // 多标签时叠加颜色在 Orca 默认颜色上
         if (tagColors.length > 1) {
           // 使用第一个标签的颜色叠加在默认颜色上
-          handleElement.style.setProperty('color', displayColor, 'important');
+          handleElement.style.setProperty('color', displayColor);
         }
         // 单标签时保持原有逻辑（在 applyBlockHandleColor 中处理）
         
@@ -1100,10 +1100,10 @@ function applyMultiTagHandleColor(blockElement: Element, displayColor: string, b
         // 根据标签数量决定处理方式
         if (tagColors.length > 1) {
           // 多标签：叠加颜色在 Orca 默认颜色上
-          titleElement.style.setProperty('color', displayColor, 'important');
+          titleElement.style.setProperty('color', displayColor);
         } else {
           // 单标签：使用原有逻辑
-          titleElement.style.setProperty('color', displayColor, 'important');
+          titleElement.style.setProperty('color', displayColor);
         }
       }
     });
@@ -1134,13 +1134,15 @@ function applyMultiTagHandleColor(blockElement: Element, displayColor: string, b
     
     validInlineElements.forEach(inlineElement => {
       if (inlineElement instanceof HTMLElement) {
+        // 检查元素是否有 fc 类，如果有则跳过（fc 表示已设置过颜色）
+        if (inlineElement.classList.contains('fc')) {
+          debugLog(`跳过带 fc 类的内联元素，不覆盖其颜色`);
+          return;
+        }
+        
         if (enableInlineColor && colorSource === 'tag') {
-          // 启用时：应用样式
-          if (tagColors.length === 1) {
-            // 单标签：使用原有逻辑
-            inlineElement.style.setProperty('color', displayColor, 'important');
-          }
-          // 多标签情况：不处理内联元素颜色
+          // 启用时：应用样式（单标签和多标签都处理）
+          inlineElement.style.setProperty('color', displayColor);
         } else {
           // 关闭时：清除样式
           inlineElement.style.removeProperty('color');
@@ -1175,7 +1177,7 @@ function applyBlockHandleColor(blockElement: Element, displayColor: string, bgCo
     }
     if (handleElement instanceof HTMLElement) {
       // 设置前景颜色（可能是 domColor 或 colorValue）
-      handleElement.style.setProperty('color', displayColor, 'important');
+      handleElement.style.setProperty('color', displayColor);
       
       // 设置图标属性（统一处理所有格式）
       if (iconValue) {
@@ -1238,7 +1240,7 @@ function applyBlockHandleColor(blockElement: Element, displayColor: string, bgCo
       }
       if (titleElement instanceof HTMLElement) {
         // 只设置前景颜色（标题不需要图标和背景色）
-        titleElement.style.setProperty('color', displayColor, 'important');
+        titleElement.style.setProperty('color', displayColor);
       }
     });
   } else {
@@ -1264,9 +1266,15 @@ function applyBlockHandleColor(blockElement: Element, displayColor: string, bgCo
       return; // 跳过子块的内联元素
     }
     if (inlineElement instanceof HTMLElement) {
+      // 检查元素是否有 fc 类，如果有则跳过（fc 表示已设置过颜色）
+      if (inlineElement.classList.contains('fc')) {
+        debugLog(`跳过带 fc 类的内联元素，不覆盖其颜色`);
+        return;
+      }
+      
       if (enableInlineColor) {
         // 启用时：应用样式
-        inlineElement.style.setProperty('color', displayColor, 'important');
+        inlineElement.style.setProperty('color', displayColor);
       } else {
         // 关闭时：清除样式
         inlineElement.style.removeProperty('color');
@@ -1290,10 +1298,10 @@ function applyInlineRefColor(inlineElement: Element, displayColor: string, tagCo
     // 根据标签数量决定处理方式
     if (tagColors.length > 1) {
       // 多标签：叠加颜色在 Orca 默认颜色上
-      contentElement.style.setProperty('color', displayColor, 'important');
+      contentElement.style.setProperty('color', displayColor);
     } else {
       // 单标签：使用原有逻辑
-    contentElement.style.setProperty('color', displayColor, 'important');
+      contentElement.style.setProperty('color', displayColor);
     }
     
     // 设置 border-bottom-color，使用 displayColor 但添加透明度
@@ -1319,6 +1327,30 @@ function applyInlineRefColor(inlineElement: Element, displayColor: string, tagCo
 function observeBlockHandleCollapse(blockElement: Element, displayColor: string, bgColorValue: string, iconValue: string | null, tagColors?: string[], colorSource?: 'block' | 'tag') {
   // 使用统一观察器管理
   unifiedObserver.addObservedElement(blockElement, displayColor, bgColorValue, iconValue, tagColors, colorSource);
+}
+
+/**
+ * 从标签引用中获取第一个有颜色的标签属性（公共逻辑）
+ * @param tagRefs 标签引用数组
+ * @param maxCount 最大获取数量，默认为1
+ * @returns 有颜色的标签属性数组
+ */
+async function getFirstColoredTagProps(tagRefs: any[], maxCount: number = 1): Promise<any[]> {
+  const coloredTagProps: any[] = [];
+  
+  for (const ref of tagRefs) {
+    if (coloredTagProps.length >= maxCount) {
+      break; // 已经找到足够的标签，停止处理
+    }
+    
+    const tagProps = await getBlockStyleProperties(ref.to);
+    // 检查_color是否开启（type=1）且有值
+    if (tagProps.colorEnabled && tagProps.colorValue) {
+      coloredTagProps.push({ ...tagProps, blockId: ref.to });
+    }
+  }
+  
+  return coloredTagProps;
 }
 
 /**
@@ -1383,6 +1415,55 @@ async function getBlockStyleProperties(blockId: number): Promise<{ colorValue: s
 }
 
 /**
+ * 清理没有标签的块的样式
+ */
+function cleanupBlockStyles(blockElement: Element) {
+  const currentBlockId = blockElement.getAttribute('data-id');
+  if (!currentBlockId) return;
+  
+  // 清理图标元素
+  const handleElements = blockElement.querySelectorAll('.orca-block-handle');
+  handleElements.forEach(handleElement => {
+    const handleParentBlock = handleElement.closest('.orca-block.orca-container');
+    if (handleParentBlock && handleParentBlock.getAttribute('data-id') === currentBlockId) {
+      if (handleElement instanceof HTMLElement) {
+        handleElement.style.removeProperty('color');
+        handleElement.style.removeProperty('background-color');
+        handleElement.style.removeProperty('background-image');
+        handleElement.removeAttribute('data-icon');
+      }
+    }
+  });
+  
+  // 清理标题元素
+  const titleElements = blockElement.querySelectorAll('.orca-repr-title');
+  titleElements.forEach(titleElement => {
+    const titleParentBlock = titleElement.closest('.orca-block.orca-container');
+    if (titleParentBlock && titleParentBlock.getAttribute('data-id') === currentBlockId) {
+      if (titleElement instanceof HTMLElement) {
+        titleElement.style.removeProperty('color');
+      }
+    }
+  });
+  
+  // 清理内联元素
+  const inlineElements = blockElement.querySelectorAll('.orca-inline[data-type="t"]');
+  inlineElements.forEach(inlineElement => {
+    const inlineParentBlock = inlineElement.closest('.orca-block.orca-container');
+    if (inlineParentBlock && inlineParentBlock.getAttribute('data-id') === currentBlockId) {
+      if (inlineElement instanceof HTMLElement) {
+        // 检查元素是否有 fc 类，如果有则跳过（fc 表示已设置过颜色）
+        if (!inlineElement.classList.contains('fc')) {
+          inlineElement.style.removeProperty('color');
+        }
+      }
+    }
+  });
+  
+  debugLog(`清理块 ${currentBlockId} 的样式`);
+}
+
+/**
  * 处理单个面板的容器块（提取公共逻辑）
  */
 async function processPanelBlocks(panelId: string, panelElement: Element) {
@@ -1441,30 +1522,25 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
         
         // 2. 从refs中获取前4个type=2的标签引用
         if (!blockData.refs || blockData.refs.length === 0) {
+          // 没有引用信息，清理样式
+          cleanupBlockStyles(element);
           return null; // 没有引用信息，跳过
         }
         
         // 找到所有type=2的引用（标签）
         const allTagRefs = blockData.refs.filter((ref: any) => ref.type === 2);
         if (allTagRefs.length === 0) {
+          // 没有标签引用，清理样式
+          cleanupBlockStyles(element);
           return null; // 没有标签引用，跳过
         }
         
-        // 遍历所有标签，找到有_color且开启的标签，最多取前4个
-        const coloredTagProps: any[] = [];
-        for (const ref of allTagRefs) {
-          if (coloredTagProps.length >= 4) {
-            break; // 已经找到4个有颜色的标签，停止处理
-          }
-          
-          const tagProps = await getBlockStyleProperties(ref.to);
-          // 检查_color是否开启（type=1）且有值
-          if (tagProps.colorEnabled && tagProps.colorValue) {
-            coloredTagProps.push({ ...tagProps, blockId: ref.to });
-          }
-        }
+        // 使用公共函数获取有颜色的标签属性，最多取前4个
+        const coloredTagProps = await getFirstColoredTagProps(allTagRefs, 4);
         
         if (coloredTagProps.length === 0) {
+          // 有标签但没有颜色标签，清理样式
+          cleanupBlockStyles(element);
           return null; // 没有有颜色的标签，跳过
         }
         
@@ -1622,6 +1698,8 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
           };
         }
         
+        // 没有标签且没有自身颜色，清理样式
+        cleanupBlockStyles(element);
         return null; // 没有启用颜色，跳过
       } catch (error) {
         return null;
@@ -1680,41 +1758,38 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
               };
             }
             
-            // 3. 如果自身块没有颜色，尝试从第一个标签读取
+            // 3. 如果自身块没有颜色，尝试从第一个有颜色的标签读取
             if (!blockData.refs || blockData.refs.length === 0) {
               return null; // 没有引用信息，跳过
             }
             
-            // 找到第一个type=2的引用（标签）
-            const firstTagRef = blockData.refs.find((ref: any) => ref.type === 2);
-            if (!firstTagRef) {
+            // 找到所有type=2的引用（标签）
+            const allTagRefs = blockData.refs.filter((ref: any) => ref.type === 2);
+            if (allTagRefs.length === 0) {
               return null; // 没有标签引用，跳过
             }
             
-            const aliasBlockId = firstTagRef.to;
+            // 使用公共函数获取第一个有颜色的标签属性
+            const coloredTagProps = await getFirstColoredTagProps(allTagRefs, 1);
             
-            if (!aliasBlockId) {
-              return null; // 引用信息不完整，跳过
+            if (coloredTagProps.length === 0) {
+              return null; // 没有有颜色的标签，跳过
             }
             
-            // 4. 获取标签的属性
-            const tagStyleProps = await getBlockStyleProperties(aliasBlockId);
+            const firstColoredTagProps = coloredTagProps[0];
+            const aliasBlockId = firstColoredTagProps.blockId;
             
-            if (!tagStyleProps.colorEnabled || !tagStyleProps.colorValue) {
-              return null; // 标签也未启用颜色或没有颜色值，跳过
-            }
-            
-            const finalDomColor = calculateDomColor(tagStyleProps.colorValue);
+            const finalDomColor = calculateDomColor(firstColoredTagProps.colorValue);
             
             return {
               blockId: refId,
               aliasBlockId: aliasBlockId, // 使用标签块ID
-              colorValue: tagStyleProps.colorValue,
-              iconValue: tagStyleProps.iconValue, // 从标签读取图标
+              colorValue: firstColoredTagProps.colorValue,
+              iconValue: firstColoredTagProps.iconValue, // 从标签读取图标
               colorSource: 'tag' as const,
               domColor: finalDomColor,
               elementType: 'inline-ref' as const,
-              tagColors: [tagStyleProps.colorValue] // 单色情况
+              tagColors: [firstColoredTagProps.colorValue] // 单色情况
             };
           } catch (error) {
             return null;
