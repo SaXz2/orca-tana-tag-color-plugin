@@ -34,26 +34,32 @@ jobs:
     - name: Build project
       run: npm run build
       
+    - name: Get package version
+      id: package-version
+      run: |
+        VERSION=$(node -p "require('./package.json').version")
+        echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+        echo "PLUGIN_VERSION=v$VERSION" >> $GITHUB_ENV
+        
     - name: Create release archive
       run: |
         cd dist
-        zip -r ../orca-tana-tag-color-plugin-v${{ github.ref_name }}.zip .
+        zip -r ../orca-tana-tag-color-plugin-v${{ steps.package-version.outputs.VERSION }}.zip .
         cd ..
-        echo "PLUGIN_VERSION=v${{ github.ref_name }}" >> $GITHUB_ENV
         
     - name: Create Release
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        gh release create "v${{ github.ref_name }}" \
-          --title "Release v${{ github.ref_name }}" \
-          --notes "## Orca Tana 标签颜色插件 v${{ github.ref_name }}
+        gh release create "v${{ steps.package-version.outputs.VERSION }}" \
+          --title "Release v${{ steps.package-version.outputs.VERSION }}" \
+          --notes "## Orca Tana 标签颜色插件 v${{ steps.package-version.outputs.VERSION }}
         
         ### 📦 安装包
-        - \`orca-tana-tag-color-plugin-v${{ github.ref_name }}.zip\` - 插件文件包
+        - \`orca-tana-tag-color-plugin-v${{ steps.package-version.outputs.VERSION }}.zip\` - 插件文件包
         
         ### 🚀 安装方法
-        1. 下载 \`orca-tana-tag-color-plugin-v${{ github.ref_name }}.zip\` 文件
+        1. 下载 \`orca-tana-tag-color-plugin-v${{ steps.package-version.outputs.VERSION }}.zip\` 文件
         2. 解压到本地目录
         3. 在 Orca Note 中进入插件管理
         4. 加载插件文件夹
@@ -69,10 +75,10 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        gh release upload "v${{ github.ref_name }}" ./orca-tana-tag-color-plugin-v${{ github.ref_name }}.zip
+        gh release upload "v${{ steps.package-version.outputs.VERSION }}" ./orca-tana-tag-color-plugin-v${{ steps.package-version.outputs.VERSION }}.zip
         
     - name: Output release info
       run: |
         echo "🎉 Release created successfully!"
-        echo "📦 Plugin package: orca-tana-tag-color-plugin-v${{ github.ref_name }}.zip"
-        echo "🔗 Release URL: https://github.com/${{ github.repository }}/releases/tag/v${{ github.ref_name }}"
+        echo "📦 Plugin package: orca-tana-tag-color-plugin-v${{ steps.package-version.outputs.VERSION }}.zip"
+        echo "🔗 Release URL: https://github.com/${{ github.repository }}/releases/tag/v${{ steps.package-version.outputs.VERSION }}"
