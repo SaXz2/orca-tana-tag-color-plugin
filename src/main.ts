@@ -951,10 +951,10 @@ function generateMultiColorBackground(tagColors: string[]): string {
   }
   
   if (tagColors.length === 2) {
-    // 2个标签：A在下B在上 (0deg-180deg为A，180deg-360deg为B)
+    // 2个标签：上下分割 (A在上，B在下)
     const colorA = hexToRgba(tagColors[0], 0.75);
     const colorB = hexToRgba(tagColors[1], 0.75);
-    return `conic-gradient(from 0deg, ${colorA} 0deg 180deg, ${colorB} 180deg 360deg)`;
+    return `linear-gradient(to bottom, ${colorA} 0%, ${colorA} 50%, ${colorB} 50%, ${colorB} 100%)`;
   }
   
   if (tagColors.length === 3) {
