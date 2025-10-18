@@ -38,6 +38,8 @@ jobs:
         run: |
           mkdir -p release-package/dist
           cp dist/index.js release-package/dist/
+          cp dist/styles.css release-package/dist/
+          cp dist/tag-value-color.css release-package/dist/
           cp icon.svg release-package/
           cp README.md release-package/
           cd release-package
