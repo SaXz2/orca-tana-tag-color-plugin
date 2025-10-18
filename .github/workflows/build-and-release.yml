@@ -42,42 +42,34 @@ jobs:
         echo "PLUGIN_VERSION=v${{ github.ref_name }}" >> $GITHUB_ENV
         
     - name: Create Release
-      uses: actions/create-release@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: v${{ github.ref_name }}
-        release_name: Release v${{ github.ref_name }}
-        body: |
-          ## Orca Tana 标签颜色插件 v${{ github.ref_name }}
-          
-          ### 📦 安装包
-          - `orca-tana-tag-color-plugin-v${{ github.ref_name }}.zip` - 插件文件包
-          
-          ### 🚀 安装方法
-          1. 下载 `orca-tana-tag-color-plugin-v${{ github.ref_name }}.zip` 文件
-          2. 解压到本地目录
-          3. 在 Orca Note 中进入插件管理
-          4. 加载插件文件夹
-          
-          ### ✨ 更新内容
-          - 自动构建的插件版本
-          - 包含所有必要的样式文件和脚本
-          
-          ### 📝 使用说明
-          详细使用说明请参考项目 README.md
-        draft: false
-        prerelease: false
+      run: |
+        gh release create "v${{ github.ref_name }}" \
+          --title "Release v${{ github.ref_name }}" \
+          --notes "## Orca Tana 标签颜色插件 v${{ github.ref_name }}
+        
+        ### 📦 安装包
+        - \`orca-tana-tag-color-plugin-v${{ github.ref_name }}.zip\` - 插件文件包
+        
+        ### 🚀 安装方法
+        1. 下载 \`orca-tana-tag-color-plugin-v${{ github.ref_name }}.zip\` 文件
+        2. 解压到本地目录
+        3. 在 Orca Note 中进入插件管理
+        4. 加载插件文件夹
+        
+        ### ✨ 更新内容
+        - 自动构建的插件版本
+        - 包含所有必要的样式文件和脚本
+        
+        ### 📝 使用说明
+        详细使用说明请参考项目 README.md"
         
     - name: Upload Release Asset
-      uses: actions/upload-release-asset@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./orca-tana-tag-color-plugin-v${{ github.ref_name }}.zip
-        asset_name: orca-tana-tag-color-plugin-v${{ github.ref_name }}.zip
-        asset_content_type: application/zip
+      run: |
+        gh release upload "v${{ github.ref_name }}" ./orca-tana-tag-color-plugin-v${{ github.ref_name }}.zip
         
     - name: Output release info
       run: |
