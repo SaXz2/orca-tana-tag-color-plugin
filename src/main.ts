@@ -1019,16 +1019,6 @@ function applyMultiTagHandleColor(blockElement: Element, displayColor: string, b
             requestAnimationFrame(() => {
               const iconClasses = iconValue.split(' ').filter(cls => cls.trim() !== '');
               
-              // 保存原始的 Tabler Icons 类（如果还没保存）
-              if (!handleElement.hasAttribute('data-original-icon-classes')) {
-                const existingClasses = Array.from(handleElement.classList);
-                const originalIconClasses = existingClasses.filter(cls => cls === 'ti' || cls.startsWith('ti-'));
-                if (originalIconClasses.length > 0) {
-                  handleElement.setAttribute('data-original-icon-classes', originalIconClasses.join(' '));
-                  debugLog(`保存块 ${currentBlockId} 的原始图标类: "${originalIconClasses.join(' ')}"`);
-                }
-              }
-              
               // 移除所有现有的 Tabler Icons 类（包括 ti、ti- 开头的所有类）
               const existingClasses = Array.from(handleElement.classList);
               existingClasses.forEach(cls => {
@@ -1044,9 +1034,6 @@ function applyMultiTagHandleColor(blockElement: Element, displayColor: string, b
                 }
               });
               
-              // 清理 data-icon 属性（Tabler Icons 使用 CSS 类，不需要 data-icon）
-              handleElement.removeAttribute('data-icon');
-              
               debugLog(`块 ${currentBlockId} 的图标是 Tabler Icons 格式: "${iconValue}"，来源: ${colorSource}，覆盖旧图标类`);
             });
           } else {
@@ -1055,35 +1042,7 @@ function applyMultiTagHandleColor(blockElement: Element, displayColor: string, b
             debugLog(`为块 ${currentBlockId} 的图标设置 data-icon="${iconValue}"，来源: ${colorSource}`);
           }
         } else {
-          // 没有图标值，恢复原始的 Tabler Icons 类
-          requestAnimationFrame(() => {
-            const originalIconClasses = handleElement.getAttribute('data-original-icon-classes');
-            if (originalIconClasses) {
-              // 移除所有现有的 Tabler Icons 类
-              const existingClasses = Array.from(handleElement.classList);
-              existingClasses.forEach(cls => {
-                if (cls === 'ti' || cls.startsWith('ti-')) {
-                  handleElement.classList.remove(cls);
-                }
-              });
-              
-              // 恢复原始的图标类
-              const classesToRestore = originalIconClasses.split(' ').filter(cls => cls.trim() !== '');
-              classesToRestore.forEach(cls => {
-                handleElement.classList.add(cls);
-              });
-              
-              // 清理保存的原始类属性
-              handleElement.removeAttribute('data-original-icon-classes');
-              
-              debugLog(`恢复块 ${currentBlockId} 的原始图标类: "${originalIconClasses}"`);
-            }
-            
-            // 清理 data-icon 属性
-            handleElement.removeAttribute('data-icon');
-            
-            debugLog(`块 ${currentBlockId} 没有图标值，清理图标`);
-          });
+          debugLog(`块 ${currentBlockId} 没有图标值，跳过设置 data-icon`);
         }
         
         // 根据标签数量决定处理方式
@@ -1228,16 +1187,6 @@ function applyBlockHandleColor(blockElement: Element, displayColor: string, bgCo
           requestAnimationFrame(() => {
             const iconClasses = iconValue.split(' ').filter(cls => cls.trim() !== '');
             
-            // 保存原始的 Tabler Icons 类（如果还没保存）
-            if (!handleElement.hasAttribute('data-original-icon-classes')) {
-              const existingClasses = Array.from(handleElement.classList);
-              const originalIconClasses = existingClasses.filter(cls => cls === 'ti' || cls.startsWith('ti-'));
-              if (originalIconClasses.length > 0) {
-                handleElement.setAttribute('data-original-icon-classes', originalIconClasses.join(' '));
-                debugLog(`保存块 ${currentBlockId} 的原始图标类: "${originalIconClasses.join(' ')}"`);
-              }
-            }
-            
             // 移除所有现有的 Tabler Icons 类（包括 ti、ti- 开头的所有类）
             const existingClasses = Array.from(handleElement.classList);
             existingClasses.forEach(cls => {
@@ -1253,9 +1202,6 @@ function applyBlockHandleColor(blockElement: Element, displayColor: string, bgCo
               }
             });
             
-            // 清理 data-icon 属性（Tabler Icons 使用 CSS 类，不需要 data-icon）
-            handleElement.removeAttribute('data-icon');
-            
             debugLog(`块 ${currentBlockId} 的图标是 Tabler Icons 格式: "${iconValue}"，覆盖旧图标类`);
           });
         } else {
@@ -1264,35 +1210,7 @@ function applyBlockHandleColor(blockElement: Element, displayColor: string, bgCo
           debugLog(`为块 ${currentBlockId} 的图标设置 data-icon="${iconValue}"`);
         }
       } else {
-        // 没有图标值，恢复原始的 Tabler Icons 类
-        requestAnimationFrame(() => {
-          const originalIconClasses = handleElement.getAttribute('data-original-icon-classes');
-          if (originalIconClasses) {
-            // 移除所有现有的 Tabler Icons 类
-            const existingClasses = Array.from(handleElement.classList);
-            existingClasses.forEach(cls => {
-              if (cls === 'ti' || cls.startsWith('ti-')) {
-                handleElement.classList.remove(cls);
-              }
-            });
-            
-            // 恢复原始的图标类
-            const classesToRestore = originalIconClasses.split(' ').filter(cls => cls.trim() !== '');
-            classesToRestore.forEach(cls => {
-              handleElement.classList.add(cls);
-            });
-            
-            // 清理保存的原始类属性
-            handleElement.removeAttribute('data-original-icon-classes');
-            
-            debugLog(`恢复块 ${currentBlockId} 的原始图标类: "${originalIconClasses}"`);
-          }
-          
-          // 清理 data-icon 属性
-          handleElement.removeAttribute('data-icon');
-          
-          debugLog(`块 ${currentBlockId} 没有图标值，清理图标`);
-        });
+        debugLog(`块 ${currentBlockId} 没有图标值，跳过设置图标`);
       }
       // 注意：不在这里移除 data-icon，避免清理自身块设置的图标
       
@@ -1513,29 +1431,6 @@ function cleanupBlockStyles(blockElement: Element) {
         handleElement.style.removeProperty('background-color');
         handleElement.style.removeProperty('background-image');
         handleElement.removeAttribute('data-icon');
-        
-        // 恢复原始的 Tabler Icons 类
-        const originalIconClasses = handleElement.getAttribute('data-original-icon-classes');
-        if (originalIconClasses) {
-          // 移除所有现有的 Tabler Icons 类
-          const existingClasses = Array.from(handleElement.classList);
-          existingClasses.forEach(cls => {
-            if (cls === 'ti' || cls.startsWith('ti-')) {
-              handleElement.classList.remove(cls);
-            }
-          });
-          
-          // 恢复原始的图标类
-          const classesToRestore = originalIconClasses.split(' ').filter(cls => cls.trim() !== '');
-          classesToRestore.forEach(cls => {
-            handleElement.classList.add(cls);
-          });
-          
-          // 清理保存的原始类属性
-          handleElement.removeAttribute('data-original-icon-classes');
-          
-          debugLog(`清理块 ${currentBlockId} 时恢复原始图标类: "${originalIconClasses}"`);
-        }
       }
     }
   });
