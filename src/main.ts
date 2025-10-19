@@ -245,7 +245,7 @@ class StyleChangeDetector {
   }>();
   
   private readonly MAX_CHANGE_COUNT = 3; // 最大变化检测次数
-  private readonly STABLE_THRESHOLD = 200; // 稳定状态阈值（毫秒）- 降低阈值，更快进入稳定状态
+  private readonly STABLE_THRESHOLD = 100; // 稳定状态阈值（毫秒）- 降低阈值，更快进入稳定状态
   
   /**
    * 获取元素当前应用的样式状态
@@ -408,7 +408,7 @@ class UnifiedObserverManager {
   private retryTimer: ReturnType<typeof setTimeout> | null = null; // 添加重试定时器跟踪
   private styleChangeDetector = new StyleChangeDetector(); // 添加样式变化检测器
   private lastUpdateTime = 0; // 添加最后更新时间
-  private readonly UPDATE_THROTTLE = 100; // 更新节流时间（毫秒）
+  private readonly UPDATE_THROTTLE = 10; // 更新节流时间（毫秒）- 降低到10ms实现接近0延迟
   
   /**
    * 启动统一观察器（优化版本：只观察面板容器）
@@ -628,8 +628,8 @@ const unifiedObserver = new UnifiedObserverManager();
 // 初始化重试相关变量
 let retryCount: number = 0;
 const MAX_RETRY_COUNT = 3; // 最大重试次数
-const RETRY_DELAY = 500; // 重试延迟（毫秒）
-const INITIAL_DELAY = 500; // 初始延迟（毫秒）
+const RETRY_DELAY = 100; // 重试延迟（毫秒）- 降低延迟实现快速响应
+const INITIAL_DELAY = 100; // 初始延迟（毫秒）- 降低延迟实现快速启动
 
 // 定义设置 schema
 const settingsSchema = {
@@ -737,7 +737,7 @@ function debounceGetPanelBlockIds() {
       dataCache.clearAllCache();
       domCache.clearAllCache();
     }
-  }, 50); // 降低防抖延迟到50ms，提升响应速度
+  }, 0); // 0延迟，立即执行，实现接近0延迟响应
 }
 
 /**
