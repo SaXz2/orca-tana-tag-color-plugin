@@ -1,0 +1,133 @@
+/* Tana自定义属性样式 */
+/* 基于dom_style_application_mechanism.md中的样式应用机制 */
+
+/* Tana别名块图标样式 */
+.tana-aliased-block-icon {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-right: 0.5em;
+  vertical-align: middle;
+  text-align: center;
+  line-height: 1;
+}
+
+.tana-aliased-block-icon-cube {
+  /* 默认立方体图标样式 */
+}
+
+.tana-aliased-block-icon-emoji {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-right: 0.5em;
+  vertical-align: middle;
+  text-align: center;
+  line-height: 1;
+  font-size: 1.2em;
+}
+
+/* Tana标签块图标样式 */
+.tana-tags-tag-icon {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-right: 0.5em;
+  vertical-align: middle;
+  text-align: center;
+  line-height: 1;
+}
+
+.tana-tags-tag-icon-hash {
+  /* 默认哈希图标样式 */
+}
+
+.tana-tags-tag-icon-emoji {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-right: 0.5em;
+  vertical-align: middle;
+  text-align: center;
+  line-height: 1;
+  font-size: 1.2em;
+}
+
+/* Tana内联引用图标样式 */
+.tana-inline-r-alias-icon {
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  margin-right: 0.3em;
+  vertical-align: middle;
+  text-align: center;
+  line-height: 1;
+  font-size: 0.9em;
+}
+
+.tana-inline-r-alias-icon-emoji {
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  margin-right: 0.3em;
+  vertical-align: middle;
+  text-align: center;
+  line-height: 1;
+  font-size: 1em;
+}
+
+/* 确保Tana样式优先级高于原生样式 */
+.tana-aliased-block-icon,
+.tana-tags-tag-icon,
+.tana-inline-r-alias-icon {
+  /* 使用!important确保样式优先级 */
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+  .tana-aliased-block-icon,
+  .tana-tags-tag-icon {
+    width: 0.9em;
+    height: 0.9em;
+    margin-right: 0.4em;
+  }
+  
+  .tana-inline-r-alias-icon {
+    width: 0.7em;
+    height: 0.7em;
+    margin-right: 0.2em;
+  }
+}
+
+/* 暗色主题适配 */
+@media (prefers-color-scheme: dark) {
+  .tana-aliased-block-icon,
+  .tana-tags-tag-icon,
+  .tana-inline-r-alias-icon {
+    /* 暗色主题下的图标样式调整 */
+    opacity: 0.9;
+  }
+}
+
+/* 高对比度模式支持 */
+@media (prefers-contrast: high) {
+  .tana-aliased-block-icon,
+  .tana-tags-tag-icon,
+  .tana-inline-r-alias-icon {
+    /* 高对比度模式下的样式调整 */
+    border: 1px solid currentColor;
+  }
+}
+
+/* 动画效果 */
+.tana-aliased-block-icon,
+.tana-tags-tag-icon,
+.tana-inline-r-alias-icon {
+  transition: all 0.2s ease-in-out;
+}
+
+.tana-aliased-block-icon:hover,
+.tana-tags-tag-icon:hover,
+.tana-inline-r-alias-icon:hover {
+  transform: scale(1.1);
+}

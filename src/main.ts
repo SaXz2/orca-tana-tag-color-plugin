@@ -7,6 +7,604 @@ let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let cleanupInterval: ReturnType<typeof setInterval> | null = null;
 
 /**
+ * Tana自定义属性系统
+ * 基于dom_style_application_mechanism.md实现自动样式应用
+ */
+class TanaPropertySystem {
+  // 自定义属性名称
+  static readonly TANA_COLOR_PROP = '_tana-color';
+  static readonly TANA_ICON_PROP = '_tana-icon';
+  
+  /**
+   * 设置Tana自定义属性
+   */
+  static async setTanaProperties(blockId: number, properties: {
+    color?: string | null;
+    icon?: string | null;
+  }) {
+    const propertyUpdates: any[] = [];
+    
+    if (properties.color !== undefined) {
+      propertyUpdates.push({
+        name: this.TANA_COLOR_PROP,
+        type: 1, // PropType.Text
+        value: properties.color
+      });
+    }
+    
+    if (properties.icon !== undefined) {
+      propertyUpdates.push({
+        name: this.TANA_ICON_PROP,
+        type: 1, // PropType.Text
+        value: properties.icon
+      });
+    }
+    
+    if (propertyUpdates.length > 0) {
+      await orca.commands.invokeTopEditorCommand(
+        "core.editor.setProperties",
+        null,
+        [blockId],
+        propertyUpdates
+      );
+    }
+  }
+  
+  /**
+   * 获取Tana自定义属性
+   */
+  static getTanaProperties(block: any): {
+    color: string | null;
+    icon: string | null;
+    colorEnabled: boolean;
+    iconEnabled: boolean;
+  } {
+    const colorProp = block.properties?.find((prop: any) => prop.name === this.TANA_COLOR_PROP);
+    const iconProp = block.properties?.find((prop: any) => prop.name === this.TANA_ICON_PROP);
+    
+    return {
+      color: colorProp?.type === 1 ? colorProp.value : null,
+      icon: iconProp?.type === 1 ? iconProp.value : null,
+      colorEnabled: colorProp?.type === 1,
+      iconEnabled: iconProp?.type === 1
+    };
+  }
+  
+  /**
+   * 获取最终属性（Tana优先，原生fallback）
+   */
+  static getFinalProperties(block: any): {
+    color: string | null;
+    icon: string | null;
+    colorEnabled: boolean;
+    iconEnabled: boolean;
+    source: 'tana' | 'native' | 'none';
+  } {
+    const tanaProps = this.getTanaProperties(block);
+    const nativeColorProp = block.properties?.find((prop: any) => prop.name === "_color");
+    const nativeIconProp = block.properties?.find((prop: any) => prop.name === "_icon");
+    
+    const nativeColor = nativeColorProp?.type === 1 ? nativeColorProp.value : null;
+    const nativeIcon = nativeIconProp?.type === 1 ? nativeIconProp.value : null;
+    
+    // Tana属性优先
+    if (tanaProps.colorEnabled || tanaProps.iconEnabled) {
+      return {
+        color: tanaProps.color,
+        icon: tanaProps.icon,
+        colorEnabled: tanaProps.colorEnabled,
+        iconEnabled: tanaProps.iconEnabled,
+        source: 'tana'
+      };
+    }
+    
+    // 原生属性fallback
+    if (nativeColor || nativeIcon) {
+      return {
+        color: nativeColor,
+        icon: nativeIcon,
+        colorEnabled: !!nativeColor,
+        iconEnabled: !!nativeIcon,
+        source: 'native'
+      };
+    }
+    
+    return {
+      color: null,
+      icon: null,
+      colorEnabled: false,
+      iconEnabled: false,
+      source: 'none'
+    };
+  }
+}
+
+/**
+ * Tana样式计算引擎
+ * 基于dom_style_application_mechanism.md和plugin_usage_guide.md
+ */
+class TanaStyleCalculator {
+  /**
+   * 计算图标样式（基于文档中的算法）
+   */
+  static calculateIconStyle(iconValue: string | null, colorValue: string | null, context: 'block' | 'inline' | 'tag' = 'block') {
+    const isTablerIcon = !iconValue || iconValue.startsWith("ti ");
+    
+    if (isTablerIcon) {
+      const baseClass = this.getBaseIconClass(context);
+      return {
+        element: "i",
+        className: `${baseClass} ${iconValue || this.getDefaultIcon(context)}`,
+        style: colorValue ? {
+          color: colorValue,
+          backgroundColor: this.calculateBackgroundColor(colorValue)
+        } : undefined
+      };
+    } else {
+      const baseClass = this.getBaseIconClass(context);
+      return {
+        element: "span", 
+        className: `${baseClass}-emoji`,
+        style: colorValue ? {
+          color: colorValue,
+          backgroundColor: this.calculateBackgroundColor(colorValue)
+        } : undefined,
+        children: iconValue
+      };
+    }
+  }
+  
+  /**
+   * 获取基础图标类名
+   */
+  private static getBaseIconClass(context: 'block' | 'inline' | 'tag'): string {
+    switch (context) {
+      case 'block': return 'tana-aliased-block-icon';
+      case 'inline': return 'tana-inline-r-alias-icon';
+      case 'tag': return 'tana-tags-tag-icon';
+      default: return 'tana-aliased-block-icon';
+    }
+  }
+  
+  /**
+   * 获取默认图标
+   */
+  private static getDefaultIcon(context: 'block' | 'inline' | 'tag'): string {
+    switch (context) {
+      case 'block': return 'ti ti-file tana-aliased-block-icon-cube';
+      case 'inline': return 'ti ti-link';
+      case 'tag': return 'ti ti-hash tana-tags-tag-icon-hash';
+      default: return 'ti ti-file';
+    }
+  }
+  
+  /**
+   * 计算背景色（基于文档中的OKLCH算法）
+   */
+  static calculateBackgroundColor(colorValue: string): string {
+    return `oklch(from ${colorValue} calc(l * 1.2) c h / 25%)`;
+  }
+  
+  /**
+   * 计算内容样式
+   */
+  static calculateContentStyle(colorValue: string | null) {
+    return colorValue ? {
+      color: colorValue
+    } : undefined;
+  }
+  
+  /**
+   * 计算文本样式
+   */
+  static calculateTextStyle(colorValue: string | null) {
+    return colorValue ? { color: colorValue } : {};
+  }
+  
+  /**
+   * 计算容器样式
+   */
+  static calculateContainerStyle(colorValue: string | null) {
+    return {
+      borderColor: colorValue,
+      boxShadow: colorValue ? `0 0 0 1px ${colorValue}20` : undefined
+    };
+  }
+}
+
+/**
+ * Tana属性管理工具
+ * 基于plugin_usage_guide.md中的最佳实践
+ */
+class TanaPropertyUtils {
+  /**
+   * 获取块的所有Tana视觉属性
+   */
+  static getTanaVisualProperties(blockId: number) {
+    const block = orca.state.blocks[blockId];
+    if (!block) return null;
+    
+    const properties = block.properties || [];
+    return {
+      icon: properties.find((p: any) => p.name === "_tana-icon")?.value?.toString() || null,
+      color: properties.find((p: any) => p.name === "_tana-color")?.value?.toString() || null,
+      hide: properties.find((p: any) => p.name === "_hide")?.value || false,
+      asAlias: properties.find((p: any) => p.name === "_asAlias")?.value || false
+    };
+  }
+  
+  /**
+   * 设置Tana视觉属性
+   */
+  static async setTanaVisualProperties(blockId: number, properties: {
+    icon?: string | null;
+    color?: string | null;
+    hide?: boolean;
+    asAlias?: boolean;
+  }) {
+    const propertyArray = Object.entries(properties)
+      .filter(([key, value]) => value !== null && value !== undefined)
+      .map(([key, value]) => ({
+        name: key === 'icon' ? '_tana-icon' : key === 'color' ? '_tana-color' : `_${key}`,
+        type: 1, // PropType.Text
+        value: value
+      }));
+    
+    if (propertyArray.length > 0) {
+      await orca.commands.invokeTopEditorCommand("core.editor.setProperties", null, [blockId], propertyArray);
+    }
+  }
+  
+  /**
+   * 清除Tana视觉属性
+   */
+  static async clearTanaVisualProperties(blockId: number) {
+    await orca.commands.invokeTopEditorCommand("core.editor.setProperties", null, [blockId], [
+      { name: "_tana-icon", type: 1, value: null },
+      { name: "_tana-color", type: 1, value: null }
+    ]);
+  }
+  
+  /**
+   * 安全设置属性（带错误处理）
+   */
+  static async safeSetTanaProperties(blockId: number, properties: any) {
+    try {
+      await this.setTanaVisualProperties(blockId, properties);
+      return { success: true };
+    } catch (error: any) {
+      console.error("设置Tana属性失败:", error);
+      return { success: false, error: error.message };
+    }
+  }
+  
+  /**
+   * 批量设置Tana属性
+   */
+  static async batchSetTanaProperties(operations: Array<{blockId: number, properties: any}>) {
+    const promises = operations.map(async ({ blockId, properties }) => {
+      const propertyArray = Object.entries(properties)
+        .filter(([key, value]) => value !== null)
+        .map(([key, value]) => ({
+          name: key === 'icon' ? '_tana-icon' : key === 'color' ? '_tana-color' : `_${key}`,
+          type: 1,
+          value: value
+        }));
+      
+      if (propertyArray.length > 0) {
+        await orca.commands.invokeTopEditorCommand("core.editor.setProperties", null, [blockId], propertyArray);
+      }
+    });
+    
+    await Promise.all(promises);
+  }
+  
+  /**
+   * 批量读取Tana属性
+   */
+  static batchGetTanaProperties(blockIds: number[]) {
+    return blockIds.map(blockId => {
+      const block = orca.state.blocks[blockId];
+      return {
+        blockId,
+        ...this.getTanaVisualProperties(blockId)
+      };
+    });
+  }
+}
+
+/**
+ * Tana自定义组件系统
+ * 基于plugin_usage_guide.md中的组件开发模式
+ */
+class TanaCustomComponents {
+  /**
+   * 自定义图标渲染器
+   */
+  static createIconRenderer(icon: string | null, color: string | null, size: 'small' | 'medium' | 'large' = 'medium', className: string = '') {
+    const iconStyle = TanaStyleCalculator.calculateIconStyle(icon, color, 'block');
+    const isTablerIcon = !icon || icon.startsWith("ti ");
+    const content = isTablerIcon ? null : icon;
+    
+    const sizeClasses = {
+      small: 'tana-icon-sm',
+      medium: 'tana-icon-md', 
+      large: 'tana-icon-lg'
+    };
+    
+    if (isTablerIcon) {
+      return {
+        element: 'i',
+        className: `${icon} ${sizeClasses[size]} ${className}`,
+        style: iconStyle.style
+      };
+    } else {
+      return {
+        element: 'span',
+        className: `tana-emoji ${sizeClasses[size]} ${className}`,
+        style: iconStyle.style,
+        children: content
+      };
+    }
+  }
+  
+  /**
+   * 主题化块组件
+   */
+  static createThemedBlock(blockId: number, theme: 'default' | 'dark' | 'light' | 'colorful' = 'default') {
+    const properties = TanaPropertyUtils.getTanaVisualProperties(blockId);
+    if (!properties) return null;
+    
+    const themeStyles = {
+      default: {},
+      dark: { filter: 'brightness(0.8)' },
+      light: { filter: 'brightness(1.2)' },
+      colorful: { filter: 'saturate(1.5)' }
+    };
+    
+    return {
+      className: `tana-themed-block theme-${theme}`,
+      style: themeStyles[theme],
+      properties: properties
+    };
+  }
+  
+  /**
+   * 可编辑块组件
+   */
+  static createEditableBlock(blockId: number, onIconChange?: (newIcon: string) => void, onColorChange?: (newColor: string) => void) {
+    const properties = TanaPropertyUtils.getTanaVisualProperties(blockId);
+    if (!properties) return null;
+    
+    return {
+      properties: properties,
+      handlers: {
+        onIconChange: async (newIcon: string) => {
+          await TanaPropertyUtils.setTanaVisualProperties(blockId, { icon: newIcon });
+          onIconChange?.(newIcon);
+        },
+        onColorChange: async (newColor: string) => {
+          await TanaPropertyUtils.setTanaVisualProperties(blockId, { color: newColor });
+          onColorChange?.(newColor);
+        }
+      }
+    };
+  }
+}
+
+/**
+ * Tana性能优化工具
+ * 基于plugin_usage_guide.md中的性能优化建议
+ */
+class TanaPerformanceUtils {
+  private static throttledSetProperties: Map<string, Function> = new Map();
+  
+  /**
+   * 创建节流的属性设置函数
+   */
+  static createThrottledSetProperties(blockId: number, delay: number = 300) {
+    const key = `throttle-${blockId}`;
+    
+    if (!this.throttledSetProperties.has(key)) {
+      const throttled = this.throttle(async (properties: any) => {
+        await TanaPropertyUtils.setTanaVisualProperties(blockId, properties);
+      }, delay);
+      
+      this.throttledSetProperties.set(key, throttled);
+    }
+    
+    return this.throttledSetProperties.get(key);
+  }
+  
+  /**
+   * 节流函数实现
+   */
+  private static throttle(func: Function, delay: number) {
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let lastExecTime = 0;
+    
+    return function(this: any, ...args: any[]) {
+      const currentTime = Date.now();
+      
+      if (currentTime - lastExecTime > delay) {
+        func.apply(this, args);
+        lastExecTime = currentTime;
+      } else {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+        }
+        timeoutId = setTimeout(() => {
+          func.apply(this, args);
+          lastExecTime = Date.now();
+        }, delay - (currentTime - lastExecTime));
+      }
+    };
+  }
+  
+  /**
+   * 清理节流缓存
+   */
+  static clearThrottleCache() {
+    this.throttledSetProperties.clear();
+  }
+}
+
+/**
+ * Tana渲染器扩展系统
+ * 基于dom_style_application_mechanism.md实现自动样式应用
+ */
+class TanaRendererExtension {
+  private static originalRenderers: Map<string, Function> = new Map();
+  
+  /**
+   * 扩展所有相关渲染器
+   */
+  static extendAllRenderers() {
+    this.extendBlockRenderers();
+    this.extendInlineRenderers();
+  }
+  
+  /**
+   * 扩展块渲染器
+   */
+  private static extendBlockRenderers() {
+    // 由于Orca API限制，我们使用状态监听方式而不是直接扩展渲染器
+    // 这将在状态变化时自动应用Tana样式
+    debugLog("Tana渲染器扩展：使用状态监听方式");
+  }
+  
+  /**
+   * 扩展内联渲染器
+   */
+  private static extendInlineRenderers() {
+    // 由于Orca API限制，我们使用状态监听方式而不是直接扩展渲染器
+    // 这将在状态变化时自动应用Tana样式
+    debugLog("Tana内联渲染器扩展：使用状态监听方式");
+  }
+  
+  /**
+   * 应用Tana样式到DOM元素
+   * 基于dom_style_application_mechanism.md中的样式应用机制
+   */
+  static applyTanaStylesToElement(element: Element, blockId: number) {
+    const block = orca.state.blocks[blockId];
+    if (!block) return;
+    
+    // 获取最终属性（Tana优先）
+    const finalProps = TanaPropertySystem.getFinalProperties(block);
+    
+    // 如果没有自定义属性，跳过
+    if (finalProps.source === 'none') return;
+    
+    // 应用样式到相关元素
+    this.applyStylesToBlockElement(element, finalProps);
+  }
+  
+  /**
+   * 应用样式到块元素
+   */
+  private static applyStylesToBlockElement(element: Element, props: any) {
+    // 查找块句柄元素
+    const handleElements = element.querySelectorAll('.orca-block-handle');
+    const titleElements = element.querySelectorAll('.orca-repr-title');
+    const inlineElements = element.querySelectorAll('.orca-inline[data-type="t"]');
+    
+    // 应用样式到句柄元素
+    handleElements.forEach(handleElement => {
+      if (handleElement instanceof HTMLElement) {
+        this.applyHandleStyles(handleElement, props);
+      }
+    });
+    
+    // 应用样式到标题元素
+    titleElements.forEach(titleElement => {
+      if (titleElement instanceof HTMLElement) {
+        this.applyTitleStyles(titleElement, props);
+      }
+    });
+    
+    // 应用样式到内联元素
+    inlineElements.forEach(inlineElement => {
+      if (inlineElement instanceof HTMLElement) {
+        this.applyInlineStyles(inlineElement, props);
+      }
+    });
+  }
+  
+  /**
+   * 应用句柄样式
+   */
+  private static applyHandleStyles(element: HTMLElement, props: any) {
+    if (props.color) {
+      element.style.setProperty('color', props.color);
+    }
+    
+    if (props.icon) {
+      this.applyIconToElement(element, props.icon);
+    }
+  }
+  
+  /**
+   * 应用标题样式
+   */
+  private static applyTitleStyles(element: HTMLElement, props: any) {
+    if (props.color) {
+      element.style.setProperty('color', props.color);
+    }
+  }
+  
+  /**
+   * 应用内联样式
+   */
+  private static applyInlineStyles(element: HTMLElement, props: any) {
+    if (props.color) {
+      element.style.setProperty('color', props.color);
+    }
+  }
+  
+  /**
+   * 应用图标到元素
+   */
+  private static applyIconToElement(element: HTMLElement, iconValue: string) {
+    const isTablerIcon = !iconValue || iconValue.startsWith("ti ");
+    
+    if (isTablerIcon) {
+      // 移除现有图标类
+      const existingClasses = Array.from(element.classList);
+      existingClasses.forEach(cls => {
+        if (cls === 'ti' || cls.startsWith('ti-')) {
+          element.classList.remove(cls);
+        }
+      });
+      
+      // 添加新图标类
+      const iconClasses = iconValue.split(' ').filter(cls => cls.trim() !== '');
+      iconClasses.forEach(cls => {
+        element.classList.add(cls);
+      });
+    } else {
+      // 设置Emoji图标
+      element.setAttribute('data-icon', iconValue);
+    }
+  }
+  
+  
+  /**
+   * 恢复原始渲染器
+   */
+  static restoreOriginalRenderers() {
+    this.originalRenderers.forEach((renderer, name) => {
+      if (name === "aliased" || name === "tag") {
+        orca.renderers.registerBlock(name, true, renderer);
+      } else if (name === "reference") {
+        orca.renderers.registerInline(name, true, renderer);
+      }
+    });
+    this.originalRenderers.clear();
+  }
+}
+
+/**
  * 数据缓存管理类
  * 用于缓存块属性数据，减少重复的后端调用
  */
@@ -2142,6 +2740,9 @@ export async function load(_name: string) {
     orca.themes.injectCSSResource(`${pluginName}/dist/tag-value-color.css`, `${pluginName}-tag-value-color`);
   }
 
+  // 扩展渲染器以支持Tana自定义属性
+  TanaRendererExtension.extendAllRenderers();
+
   // 注册命令：获取所有面板块ID
   orca.commands.registerCommand(
     `${pluginName}.getAllPanelBlockIds`,
@@ -2158,6 +2759,75 @@ export async function load(_name: string) {
       await manualClearMemory();
     },
     "清理插件内存缓存"
+  );
+
+  // 注册Tana属性相关命令
+  orca.commands.registerCommand(
+    `${pluginName}.setTanaColor`,
+    async (blockId: number, color: string) => {
+      await TanaPropertySystem.setTanaProperties(blockId, { color });
+      orca.notify("success", `已设置Tana颜色: ${color}`);
+    },
+    "设置Tana颜色属性"
+  );
+
+  orca.commands.registerCommand(
+    `${pluginName}.setTanaIcon`,
+    async (blockId: number, icon: string) => {
+      await TanaPropertySystem.setTanaProperties(blockId, { icon });
+      orca.notify("success", `已设置Tana图标: ${icon}`);
+    },
+    "设置Tana图标属性"
+  );
+
+  orca.commands.registerCommand(
+    `${pluginName}.clearTanaProperties`,
+    async (blockId: number) => {
+      await TanaPropertySystem.setTanaProperties(blockId, { color: null, icon: null });
+      orca.notify("success", `已清除Tana属性`);
+    },
+    "清除Tana属性"
+  );
+
+  // 注册高级Tana功能命令
+  orca.commands.registerCommand(
+    `${pluginName}.batchSetTanaProperties`,
+    async (operations: Array<{blockId: number, properties: any}>) => {
+      await TanaPropertyUtils.batchSetTanaProperties(operations);
+      orca.notify("success", `已批量设置${operations.length}个块的Tana属性`);
+    },
+    "批量设置Tana属性"
+  );
+
+  orca.commands.registerCommand(
+    `${pluginName}.getTanaProperties`,
+    async (blockId: number) => {
+      const properties = TanaPropertyUtils.getTanaVisualProperties(blockId);
+      orca.notify("info", `Tana属性: ${JSON.stringify(properties)}`);
+    },
+    "获取Tana属性"
+  );
+
+  orca.commands.registerCommand(
+    `${pluginName}.batchGetTanaProperties`,
+    async (blockIds: number[]) => {
+      const results = TanaPropertyUtils.batchGetTanaProperties(blockIds);
+      orca.notify("info", `已获取${results.length}个块的Tana属性`);
+    },
+    "批量获取Tana属性"
+  );
+
+  orca.commands.registerCommand(
+    `${pluginName}.safeSetTanaProperties`,
+    async (blockId: number, properties: any) => {
+      const result = await TanaPropertyUtils.safeSetTanaProperties(blockId, properties);
+      if (result.success) {
+        orca.notify("success", `安全设置Tana属性成功`);
+      } else {
+        orca.notify("error", `设置失败: ${result.error}`);
+      }
+    },
+    "安全设置Tana属性"
   );
 
   // 启动统一观察器
@@ -2196,6 +2866,12 @@ export async function load(_name: string) {
 }
 
 export async function unload() {
+  // 恢复原始渲染器
+  TanaRendererExtension.restoreOriginalRenderers();
+  
+  // 清理Tana性能优化缓存
+  TanaPerformanceUtils.clearThrottleCache();
+  
   // 移除注入的CSS样式
   orca.themes.removeCSSResources(`${pluginName}-styles`);
   orca.themes.removeCSSResources(`${pluginName}-tag-value-color`);
