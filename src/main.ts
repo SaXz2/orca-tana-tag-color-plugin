@@ -231,6 +231,7 @@ class StyleChangeDetector {
       backgroundImage: string;
       opacity: string;
       dataIcon: string;
+      hasBoldClass: boolean; // 是否有 b 类
     };
     appliedStyles: {
       color: string;
@@ -238,6 +239,7 @@ class StyleChangeDetector {
       backgroundImage: string;
       opacity: string;
       dataIcon: string;
+      hasBoldClass: boolean; // 是否有 b 类
     };
     changeCount: number;
     lastChangeTime: number;
@@ -256,13 +258,15 @@ class StyleChangeDetector {
     backgroundImage: string;
     opacity: string;
     dataIcon: string;
+    hasBoldClass: boolean;
   } {
     return {
       color: element.style.color || '',
       backgroundColor: element.style.backgroundColor || '',
       backgroundImage: element.style.backgroundImage || '',
       opacity: element.style.opacity || '',
-      dataIcon: element.getAttribute('data-icon') || ''
+      dataIcon: element.getAttribute('data-icon') || '',
+      hasBoldClass: element.classList.contains('b') // 检测是否有 b 类
     };
   }
   
@@ -280,15 +284,21 @@ class StyleChangeDetector {
     
     const appliedStyles = this.getElementAppliedStyleState(element);
     
+    // 扩展期望样式，包含 b 类状态
+    const extendedExpectedStyles = {
+      ...expectedStyles,
+      hasBoldClass: appliedStyles.hasBoldClass
+    };
+    
     this.elementStyleStates.set(element, {
-      expectedStyles,
+      expectedStyles: extendedExpectedStyles,
       appliedStyles,
       changeCount: 0,
       lastChangeTime: performance.now(),
       isStable: false
     });
     
-    debugLog(`记录元素期望样式:`, expectedStyles);
+    debugLog(`记录元素期望样式:`, extendedExpectedStyles);
   }
   
   /**
@@ -307,13 +317,20 @@ class StyleChangeDetector {
     
     const currentAppliedStyles = this.getElementAppliedStyleState(element);
     
+    // 关键修复：如果元素当前有 b 类，直接跳过样式更新，避免覆盖粗体样式
+    if (currentAppliedStyles.hasBoldClass) {
+      debugLog(`元素有 b 类，跳过样式更新，避免覆盖粗体样式`);
+      return false;
+    }
+    
     // 检查应用的样式是否与期望的样式一致
     const stylesMatch = (
       cachedState.expectedStyles.color === currentAppliedStyles.color &&
       cachedState.expectedStyles.backgroundColor === currentAppliedStyles.backgroundColor &&
       cachedState.expectedStyles.backgroundImage === currentAppliedStyles.backgroundImage &&
       cachedState.expectedStyles.opacity === currentAppliedStyles.opacity &&
-      cachedState.expectedStyles.dataIcon === currentAppliedStyles.dataIcon
+      cachedState.expectedStyles.dataIcon === currentAppliedStyles.dataIcon &&
+      cachedState.expectedStyles.hasBoldClass === currentAppliedStyles.hasBoldClass
     );
     
     if (!stylesMatch) {
@@ -1179,9 +1196,17 @@ function applyMultiTagHandleColor(blockElement: Element, displayColor: string, b
     
     validInlineElements.forEach(inlineElement => {
       if (inlineElement instanceof HTMLElement) {
-        // 检查元素是否有 fc 类或 b 类，如果有则跳过（fc 表示已设置过颜色，b 表示加粗样式）
-        if (inlineElement.classList.contains('fc') || inlineElement.classList.contains('b')) {
-          debugLog(`跳过带 fc 类或 b 类的内联元素，不覆盖其颜色`);
+        // 检查元素是否有 fc 类，如果有则跳过（fc 表示已设置过颜色）
+        if (inlineElement.classList.contains('fc')) {
+          debugLog(`跳过带 fc 类的内联元素，不覆盖其颜色`);
+          return;
+        }
+        
+        // 检查元素是否有 b 类（粗体样式）
+        if (inlineElement.classList.contains('b')) {
+          // 有 b 类时，清除颜色样式，让粗体样式显示
+          debugLog(`元素有 b 类，清除颜色样式，让粗体样式显示`);
+          inlineElement.style.removeProperty('color');
           return;
         }
         
@@ -1311,9 +1336,17 @@ function applyBlockHandleColor(blockElement: Element, displayColor: string, bgCo
       return; // 跳过子块的内联元素
     }
     if (inlineElement instanceof HTMLElement) {
-      // 检查元素是否有 fc 类或 b 类，如果有则跳过（fc 表示已设置过颜色，b 表示加粗样式）
-      if (inlineElement.classList.contains('fc') || inlineElement.classList.contains('b')) {
-        debugLog(`跳过带 fc 类或 b 类的内联元素，不覆盖其颜色`);
+      // 检查元素是否有 fc 类，如果有则跳过（fc 表示已设置过颜色）
+      if (inlineElement.classList.contains('fc')) {
+        debugLog(`跳过带 fc 类的内联元素，不覆盖其颜色`);
+        return;
+      }
+      
+      // 检查元素是否有 b 类（粗体样式）
+      if (inlineElement.classList.contains('b')) {
+        // 有 b 类时，清除颜色样式，让粗体样式显示
+        debugLog(`元素有 b 类，清除颜色样式，让粗体样式显示`);
+        inlineElement.style.removeProperty('color');
         return;
       }
       
@@ -1497,8 +1530,9 @@ function cleanupBlockStyles(blockElement: Element) {
     const inlineParentBlock = inlineElement.closest('.orca-block.orca-container');
     if (inlineParentBlock && inlineParentBlock.getAttribute('data-id') === currentBlockId) {
       if (inlineElement instanceof HTMLElement) {
-        // 检查元素是否有 fc 类或 b 类，如果有则跳过（fc 表示已设置过颜色，b 表示加粗样式）
-        if (!inlineElement.classList.contains('fc') && !inlineElement.classList.contains('b')) {
+        // 检查元素是否有 fc 类，如果有则跳过（fc 表示已设置过颜色）
+        if (!inlineElement.classList.contains('fc')) {
+          // 无论是否有 b 类，都清除颜色样式
           inlineElement.style.removeProperty('color');
         }
       }
