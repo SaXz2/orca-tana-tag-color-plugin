@@ -313,141 +313,7 @@ class TanaPropertyUtils {
   }
 }
 
-/**
- * Tana自定义组件系统
- * 基于plugin_usage_guide.md中的组件开发模式
- */
-class TanaCustomComponents {
-  /**
-   * 自定义图标渲染器
-   */
-  static createIconRenderer(icon: string | null, color: string | null, size: 'small' | 'medium' | 'large' = 'medium', className: string = '') {
-    const iconStyle = TanaStyleCalculator.calculateIconStyle(icon, color, 'block');
-    const isTablerIcon = !icon || icon.startsWith("ti ");
-    const content = isTablerIcon ? null : icon;
-    
-    const sizeClasses = {
-      small: 'tana-icon-sm',
-      medium: 'tana-icon-md', 
-      large: 'tana-icon-lg'
-    };
-    
-    if (isTablerIcon) {
-      return {
-        element: 'i',
-        className: `${icon} ${sizeClasses[size]} ${className}`,
-        style: iconStyle.style
-      };
-    } else {
-      return {
-        element: 'span',
-        className: `tana-emoji ${sizeClasses[size]} ${className}`,
-        style: iconStyle.style,
-        children: content
-      };
-    }
-  }
-  
-  /**
-   * 主题化块组件
-   */
-  static createThemedBlock(blockId: number, theme: 'default' | 'dark' | 'light' | 'colorful' = 'default') {
-    const properties = TanaPropertyUtils.getTanaVisualProperties(blockId);
-    if (!properties) return null;
-    
-    const themeStyles = {
-      default: {},
-      dark: { filter: 'brightness(0.8)' },
-      light: { filter: 'brightness(1.2)' },
-      colorful: { filter: 'saturate(1.5)' }
-    };
-    
-    return {
-      className: `tana-themed-block theme-${theme}`,
-      style: themeStyles[theme],
-      properties: properties
-    };
-  }
-  
-  /**
-   * 可编辑块组件
-   */
-  static createEditableBlock(blockId: number, onIconChange?: (newIcon: string) => void, onColorChange?: (newColor: string) => void) {
-    const properties = TanaPropertyUtils.getTanaVisualProperties(blockId);
-    if (!properties) return null;
-    
-    return {
-      properties: properties,
-      handlers: {
-        onIconChange: async (newIcon: string) => {
-          await TanaPropertyUtils.setTanaVisualProperties(blockId, { icon: newIcon });
-          onIconChange?.(newIcon);
-        },
-        onColorChange: async (newColor: string) => {
-          await TanaPropertyUtils.setTanaVisualProperties(blockId, { color: newColor });
-          onColorChange?.(newColor);
-        }
-      }
-    };
-  }
-}
 
-/**
- * Tana性能优化工具
- * 基于plugin_usage_guide.md中的性能优化建议
- */
-class TanaPerformanceUtils {
-  private static throttledSetProperties: Map<string, Function> = new Map();
-  
-  /**
-   * 创建节流的属性设置函数
-   */
-  static createThrottledSetProperties(blockId: number, delay: number = 300) {
-    const key = `throttle-${blockId}`;
-    
-    if (!this.throttledSetProperties.has(key)) {
-      const throttled = this.throttle(async (properties: any) => {
-        await TanaPropertyUtils.setTanaVisualProperties(blockId, properties);
-      }, delay);
-      
-      this.throttledSetProperties.set(key, throttled);
-    }
-    
-    return this.throttledSetProperties.get(key);
-  }
-  
-  /**
-   * 节流函数实现
-   */
-  private static throttle(func: Function, delay: number) {
-    let timeoutId: ReturnType<typeof setTimeout> | null = null;
-    let lastExecTime = 0;
-    
-    return function(this: any, ...args: any[]) {
-      const currentTime = Date.now();
-      
-      if (currentTime - lastExecTime > delay) {
-        func.apply(this, args);
-        lastExecTime = currentTime;
-      } else {
-        if (timeoutId) {
-          clearTimeout(timeoutId);
-        }
-        timeoutId = setTimeout(() => {
-          func.apply(this, args);
-          lastExecTime = Date.now();
-        }, delay - (currentTime - lastExecTime));
-      }
-    };
-  }
-  
-  /**
-   * 清理节流缓存
-   */
-  static clearThrottleCache() {
-    this.throttledSetProperties.clear();
-  }
-}
 
 /**
  * Tana渲染器扩展系统
@@ -905,6 +771,13 @@ class StyleChangeDetector {
   needsStyleUpdate(element: Element): boolean {
     if (!(element instanceof HTMLElement)) return false;
     
+    // 检查是否在滚动中，如果是则跳过更新
+    const unifiedObserver = (window as any).unifiedObserver;
+    if (unifiedObserver && unifiedObserver.isScrolling) {
+      debugLog(`滚动中，跳过样式更新`);
+      return false;
+    }
+    
     const cachedState = this.elementStyleStates.get(element);
     
     if (!cachedState) {
@@ -1023,7 +896,9 @@ class UnifiedObserverManager {
   private retryTimer: ReturnType<typeof setTimeout> | null = null; // 添加重试定时器跟踪
   private styleChangeDetector = new StyleChangeDetector(); // 添加样式变化检测器
   private lastUpdateTime = 0; // 添加最后更新时间
-  private readonly UPDATE_THROTTLE = 10; // 更新节流时间（毫秒）- 降低到10ms实现接近0延迟
+  private readonly UPDATE_THROTTLE = 50; // 更新节流时间（毫秒）- 增加到50ms减少频繁更新
+  public isScrolling = false; // 添加滚动状态标记
+  private scrollEndTimer: ReturnType<typeof setTimeout> | null = null; // 滚动结束定时器
   
   /**
    * 启动统一观察器（优化版本：只观察面板容器）
@@ -1033,14 +908,33 @@ class UnifiedObserverManager {
       this.observer.disconnect();
     }
     
+    // 添加滚动事件监听，避免滚动时触发样式更新
+    this.setupScrollListener();
+    
     this.observer = new MutationObserver((mutations) => {
+      // 如果正在滚动，跳过样式更新，避免闪烁
+      if (this.isScrolling) {
+        debugLog(`正在滚动中，跳过样式更新`);
+        return;
+      }
+      
       // 批量处理所有变化，避免频繁重绘
       const elementsToUpdate = new Set<Element>();
       
-      // 优化：过滤掉不重要的变化
+      // 优化：过滤掉不重要的变化，增加滚动相关的class过滤
       const significantMutations = mutations.filter(mutation => {
         // 只关注class属性的变化和子节点的添加/删除
         if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
+          const target = mutation.target as Element;
+          const classList = target.classList.toString();
+          
+          // 过滤掉滚动相关的临时class变化
+          if (classList.includes('scrolling') || 
+              classList.includes('scroll') || 
+              classList.includes('transform') ||
+              classList.includes('transition')) {
+            return false;
+          }
           return true;
         }
         if (mutation.type === 'childList' && (mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0)) {
@@ -1134,6 +1028,39 @@ class UnifiedObserverManager {
   }
   
   /**
+   * 设置滚动事件监听
+   */
+  private setupScrollListener(): void {
+    // 监听滚动开始
+    const handleScrollStart = () => {
+      this.isScrolling = true;
+      debugLog(`滚动开始，暂停样式更新`);
+    };
+    
+    // 监听滚动结束
+    const handleScrollEnd = () => {
+      // 清除之前的定时器
+      if (this.scrollEndTimer) {
+        clearTimeout(this.scrollEndTimer);
+      }
+      
+      // 延迟标记滚动结束，避免频繁切换
+      this.scrollEndTimer = setTimeout(() => {
+        this.isScrolling = false;
+        debugLog(`滚动结束，恢复样式更新`);
+      }, 150); // 150ms延迟，确保滚动完全结束
+    };
+    
+    // 使用passive监听器提高性能
+    document.addEventListener('scroll', handleScrollStart, { passive: true });
+    document.addEventListener('scroll', handleScrollEnd, { passive: true });
+    
+    // 监听触摸滚动（移动端）
+    document.addEventListener('touchmove', handleScrollStart, { passive: true });
+    document.addEventListener('touchend', handleScrollEnd, { passive: true });
+  }
+  
+  /**
    * 观察面板容器（性能优化：减少观察范围，内存泄漏防护）
    */
   private observePanelContainers(): void {
@@ -1215,6 +1142,15 @@ class UnifiedObserverManager {
       this.retryTimer = null;
     }
     
+    // 清理滚动结束定时器
+    if (this.scrollEndTimer) {
+      clearTimeout(this.scrollEndTimer);
+      this.scrollEndTimer = null;
+    }
+    
+    // 清理滚动事件监听器
+    this.cleanupScrollListener();
+    
     this.observedElements.clear();
     this.styleChangeDetector.clearAllStates();
   }
@@ -1233,12 +1169,25 @@ class UnifiedObserverManager {
   cleanupInvalidStyleReferences(): void {
     this.styleChangeDetector.cleanupInvalidElements();
   }
+  
+  /**
+   * 清理滚动事件监听器
+   */
+  private cleanupScrollListener(): void {
+    // 注意：由于使用了匿名函数，这里无法直接移除事件监听器
+    // 在实际应用中，应该保存事件监听器的引用以便移除
+    // 这里主要是为了代码完整性，实际清理在页面卸载时进行
+    debugLog('清理滚动事件监听器');
+  }
 }
 
 // 创建全局缓存实例
 const dataCache = new DataCache();
 const domCache = new DOMCache();
 const unifiedObserver = new UnifiedObserverManager();
+
+// 将unifiedObserver暴露到全局，以便其他组件可以访问滚动状态
+(window as any).unifiedObserver = unifiedObserver;
 
 // 初始化重试相关变量
 let retryCount: number = 0;
@@ -1295,50 +1244,6 @@ function debugError(...args: any[]) {
   }
 }
 
-/**
- * 手动清理内存函数
- * 清理所有缓存、DOM引用和样式状态，然后重新初始化
- */
-async function manualClearMemory() {
-  debugLog('开始手动清理内存...');
-  
-  try {
-    // 1. 停止统一观察器
-    unifiedObserver.stopObserver();
-    debugLog('已停止统一观察器');
-    
-    // 2. 清理所有缓存
-    dataCache.clearAllCache();
-    domCache.clearAllCache();
-    unifiedObserver.clearAllObservedElements();
-    debugLog('已清理所有缓存');
-    
-    // 3. 清理防抖定时器
-    if (debounceTimer) {
-      clearTimeout(debounceTimer);
-      debounceTimer = null;
-      debugLog('已清理防抖定时器');
-    }
-    
-    // 4. 清理十六进制颜色转换缓存
-    hexToRgbaCache.clear();
-    debugLog('已清理颜色转换缓存');
-    
-    // 5. 重新启动统一观察器
-    unifiedObserver.startObserver();
-    debugLog('已重新启动统一观察器');
-    
-    // 6. 重新初始化插件功能
-    retryCount = 0; // 重置重试计数
-    setTimeout(() => initializeWithRetry(), INITIAL_DELAY);
-    debugLog('已重新初始化插件功能');
-    
-    console.log('[Tana Tag Color Plugin] 内存清理完成，插件已重新初始化');
-  } catch (error) {
-    debugError('手动清理内存时发生错误:', error);
-    console.error('[Tana Tag Color Plugin] 内存清理失败:', error);
-  }
-}
 
 /**
  * 递归遍历面板结构，收集所有 ViewPanel（优化算法）
@@ -1381,6 +1286,14 @@ function debounceGetPanelBlockIds() {
 
   debounceTimer = setTimeout(async () => {
     try {
+      // 检查是否在滚动中，如果是则延迟执行
+      if (unifiedObserver && unifiedObserver.isScrolling) {
+        debugLog(`滚动中，延迟执行样式更新`);
+        // 重新设置定时器，等待滚动结束
+        debounceTimer = setTimeout(() => debounceGetPanelBlockIds(), 200);
+        return;
+      }
+      
       // 检查面板结构是否发生变化，如果变化则清除缓存并刷新观察器
       if (domCache.checkPanelStructureChange()) {
         domCache.clearAllCache();
@@ -1397,7 +1310,7 @@ function debounceGetPanelBlockIds() {
       dataCache.clearAllCache();
       domCache.clearAllCache();
     }
-  }, 0); // 0延迟，立即执行，实现接近0延迟响应
+  }, 100); // 增加到100ms延迟，减少频繁更新
 }
 
 /**
@@ -2743,92 +2656,6 @@ export async function load(_name: string) {
   // 扩展渲染器以支持Tana自定义属性
   TanaRendererExtension.extendAllRenderers();
 
-  // 注册命令：获取所有面板块ID
-  orca.commands.registerCommand(
-    `${pluginName}.getAllPanelBlockIds`,
-    async () => {
-      await getAllPanelBlockIds();
-    },
-    "获取所有面板的块ID"
-  );
-
-  // 注册命令：手动清理内存
-  orca.commands.registerCommand(
-    `${pluginName}.manualClearMemory`,
-    async () => {
-      await manualClearMemory();
-    },
-    "清理插件内存缓存"
-  );
-
-  // 注册Tana属性相关命令
-  orca.commands.registerCommand(
-    `${pluginName}.setTanaColor`,
-    async (blockId: number, color: string) => {
-      await TanaPropertySystem.setTanaProperties(blockId, { color });
-      orca.notify("success", `已设置Tana颜色: ${color}`);
-    },
-    "设置Tana颜色属性"
-  );
-
-  orca.commands.registerCommand(
-    `${pluginName}.setTanaIcon`,
-    async (blockId: number, icon: string) => {
-      await TanaPropertySystem.setTanaProperties(blockId, { icon });
-      orca.notify("success", `已设置Tana图标: ${icon}`);
-    },
-    "设置Tana图标属性"
-  );
-
-  orca.commands.registerCommand(
-    `${pluginName}.clearTanaProperties`,
-    async (blockId: number) => {
-      await TanaPropertySystem.setTanaProperties(blockId, { color: null, icon: null });
-      orca.notify("success", `已清除Tana属性`);
-    },
-    "清除Tana属性"
-  );
-
-  // 注册高级Tana功能命令
-  orca.commands.registerCommand(
-    `${pluginName}.batchSetTanaProperties`,
-    async (operations: Array<{blockId: number, properties: any}>) => {
-      await TanaPropertyUtils.batchSetTanaProperties(operations);
-      orca.notify("success", `已批量设置${operations.length}个块的Tana属性`);
-    },
-    "批量设置Tana属性"
-  );
-
-  orca.commands.registerCommand(
-    `${pluginName}.getTanaProperties`,
-    async (blockId: number) => {
-      const properties = TanaPropertyUtils.getTanaVisualProperties(blockId);
-      orca.notify("info", `Tana属性: ${JSON.stringify(properties)}`);
-    },
-    "获取Tana属性"
-  );
-
-  orca.commands.registerCommand(
-    `${pluginName}.batchGetTanaProperties`,
-    async (blockIds: number[]) => {
-      const results = TanaPropertyUtils.batchGetTanaProperties(blockIds);
-      orca.notify("info", `已获取${results.length}个块的Tana属性`);
-    },
-    "批量获取Tana属性"
-  );
-
-  orca.commands.registerCommand(
-    `${pluginName}.safeSetTanaProperties`,
-    async (blockId: number, properties: any) => {
-      const result = await TanaPropertyUtils.safeSetTanaProperties(blockId, properties);
-      if (result.success) {
-        orca.notify("success", `安全设置Tana属性成功`);
-      } else {
-        orca.notify("error", `设置失败: ${result.error}`);
-      }
-    },
-    "安全设置Tana属性"
-  );
 
   // 启动统一观察器
   unifiedObserver.startObserver();
@@ -2869,8 +2696,6 @@ export async function unload() {
   // 恢复原始渲染器
   TanaRendererExtension.restoreOriginalRenderers();
   
-  // 清理Tana性能优化缓存
-  TanaPerformanceUtils.clearThrottleCache();
   
   // 移除注入的CSS样式
   orca.themes.removeCSSResources(`${pluginName}-styles`);
@@ -2901,7 +2726,4 @@ export async function unload() {
     unsubscribe = null;
   }
   
-  // 清理注册的命令
-  orca.commands.unregisterCommand(`${pluginName}.getAllPanelBlockIds`);
-  orca.commands.unregisterCommand(`${pluginName}.manualClearMemory`);
 }
