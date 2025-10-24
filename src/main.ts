@@ -2119,14 +2119,35 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
         
         // 找到所有type=2的引用（标签）
         const allTagRefs = blockData.refs.filter((ref: any) => ref.type === 2);
-        if (allTagRefs.length === 0) {
+        
+        // 从_tags属性中获取标签顺序
+        const tagsProperty = blockData.properties?.find((prop: any) => prop.name === '_tags');
+        let sortedTagRefs = allTagRefs;
+        
+        if (tagsProperty && tagsProperty.value && Array.isArray(tagsProperty.value)) {
+          // 按照_tags中的value数组顺序重新排列标签引用
+          const orderedTagIds = tagsProperty.value;
+          const tagRefsMap = new Map();
+          
+          // 创建标签引用ID到引用的映射
+          allTagRefs.forEach((ref: any) => {
+            tagRefsMap.set(ref.id, ref);
+          });
+          
+          // 按照_tags中的顺序重新排列
+          sortedTagRefs = orderedTagIds
+            .map((tagId: number) => tagRefsMap.get(tagId))
+            .filter((ref: any) => ref !== undefined); // 过滤掉不存在的引用
+        }
+        if (sortedTagRefs.length === 0) {
           // 没有标签引用，清理样式
           cleanupBlockStyles(element);
           return null; // 没有标签引用，跳过
         }
         
         // 使用公共函数获取有效的标签属性（有颜色或有图标），最多取前4个
-        const validTagProps = await getFirstValidTagProps(allTagRefs, 4);
+        // 现在使用排序后的标签引用
+        const validTagProps = await getFirstValidTagProps(sortedTagRefs, 4);
         
         if (validTagProps.length === 0) {
           // 有标签但没有有效标签（无颜色无图标），清理样式
