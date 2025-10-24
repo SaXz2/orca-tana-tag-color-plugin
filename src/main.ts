@@ -5,6 +5,7 @@ let pluginName: string;
 let unsubscribe: (() => void) | null = null;
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let cleanupInterval: ReturnType<typeof setInterval> | null = null;
+let cssInjected = false; // 追踪CSS注入状态，避免重复注入
 
 /**
  * Tana自定义属性系统
@@ -471,6 +472,56 @@ class TanaRendererExtension {
 }
 
 /**
+ * 请求队列管理类
+ * 限制并发请求数量，避免同时发起过多后端请求
+ */
+class RequestQueue {
+  private queue: Array<() => Promise<any>> = [];
+  private running = 0;
+  private readonly maxConcurrent = 10; // 限制同时最多10个请求
+  
+  /**
+   * 添加请求到队列
+   */
+  async add<T>(fn: () => Promise<T>): Promise<T> {
+    // 如果当前运行的请求数量达到上限，等待
+    while (this.running >= this.maxConcurrent) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    
+    this.running++;
+    
+    try {
+      const result = await fn();
+      return result;
+    } finally {
+      this.running--;
+      // 处理队列中的下一个请求
+      if (this.queue.length > 0) {
+        const next = this.queue.shift();
+        if (next) {
+          next();
+        }
+      }
+    }
+  }
+  
+  /**
+   * 清空队列
+   */
+  clear(): void {
+    this.queue = [];
+  }
+  
+  /**
+   * 获取当前运行的请求数量
+   */
+  getRunningCount(): number {
+    return this.running;
+  }
+}
+
+/**
  * 数据缓存管理类
  * 用于缓存块属性数据，减少重复的后端调用
  */
@@ -881,6 +932,189 @@ class StyleChangeDetector {
 }
 
 /**
+ * 可见性观察器管理类
+ * 使用 IntersectionObserver 只处理可见的块，大幅提升大量块时的性能
+ */
+class VisibilityObserver {
+  private observer: IntersectionObserver | null = null;
+  private visibleElements = new Set<Element>();
+  private pendingElements = new Map<Element, {
+    displayColor: string;
+    bgColorValue: string;
+    iconValue: string | null;
+    tagColors?: string[];
+    colorSource?: 'block' | 'tag';
+  }>();
+  
+  /**
+   * 启动可见性观察器
+   */
+  startObserver(): void {
+    if (this.observer) {
+      this.observer.disconnect();
+    }
+    
+    this.observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach(entry => {
+          const element = entry.target;
+          
+          if (entry.isIntersecting) {
+            // 元素进入可见区域
+            this.visibleElements.add(element);
+            
+            // 如果有待处理的样式配置，立即应用
+            const config = this.pendingElements.get(element);
+            if (config) {
+              this.applyStyles(element, config);
+              debugLog(`元素进入可见区域，应用样式: ${element.getAttribute('data-id')}`);
+            }
+          } else {
+            // 元素离开可见区域
+            this.visibleElements.delete(element);
+            debugLog(`元素离开可见区域: ${element.getAttribute('data-id')}`);
+          }
+        });
+      },
+      {
+        // 提前100px开始加载，提供更流畅的体验
+        rootMargin: '100px 0px',
+        // 至少10%可见时触发
+        threshold: 0.1
+      }
+    );
+    
+    debugLog('可见性观察器已启动');
+  }
+  
+  /**
+   * 观察元素
+   */
+  observeElement(
+    element: Element,
+    config: {
+      displayColor: string;
+      bgColorValue: string;
+      iconValue: string | null;
+      tagColors?: string[];
+      colorSource?: 'block' | 'tag';
+    }
+  ): void {
+    if (!this.observer) return;
+    
+    // 保存配置
+    this.pendingElements.set(element, config);
+    
+    // 开始观察
+    this.observer.observe(element);
+    
+    // 如果元素已经可见，立即应用样式
+    if (this.isVisible(element)) {
+      this.applyStyles(element, config);
+    }
+  }
+  
+  /**
+   * 应用样式到元素
+   */
+  private applyStyles(
+    element: Element,
+    config: {
+      displayColor: string;
+      bgColorValue: string;
+      iconValue: string | null;
+      tagColors?: string[];
+      colorSource?: 'block' | 'tag';
+    }
+  ): void {
+    // 根据标签数量决定使用哪个函数
+    if (config.tagColors && config.tagColors.length > 1) {
+      applyMultiTagHandleColor(
+        element,
+        config.displayColor,
+        config.bgColorValue,
+        config.iconValue,
+        config.tagColors,
+        config.colorSource || 'tag'
+      );
+    } else {
+      applyBlockHandleColor(
+        element,
+        config.displayColor,
+        config.bgColorValue,
+        config.iconValue
+      );
+    }
+  }
+  
+  /**
+   * 检查元素是否可见
+   */
+  isVisible(element: Element): boolean {
+    return this.visibleElements.has(element);
+  }
+  
+  /**
+   * 取消观察元素
+   */
+  unobserveElement(element: Element): void {
+    if (this.observer) {
+      this.observer.unobserve(element);
+    }
+    this.pendingElements.delete(element);
+    this.visibleElements.delete(element);
+  }
+  
+  /**
+   * 停止观察器
+   */
+  stopObserver(): void {
+    if (this.observer) {
+      this.observer.disconnect();
+      this.observer = null;
+    }
+    this.visibleElements.clear();
+    this.pendingElements.clear();
+    debugLog('可见性观察器已停止');
+  }
+  
+  /**
+   * 获取可见元素数量
+   */
+  getVisibleCount(): number {
+    return this.visibleElements.size;
+  }
+  
+  /**
+   * 获取待处理元素数量
+   */
+  getPendingCount(): number {
+    return this.pendingElements.size;
+  }
+  
+  /**
+   * 清理失效的元素引用
+   */
+  cleanupInvalidElements(): void {
+    const invalidElements: Element[] = [];
+    
+    for (const element of this.pendingElements.keys()) {
+      if (!document.contains(element)) {
+        invalidElements.push(element);
+      }
+    }
+    
+    invalidElements.forEach(element => {
+      this.unobserveElement(element);
+    });
+    
+    if (invalidElements.length > 0) {
+      debugLog(`清理了${invalidElements.length}个失效的可见性观察元素`);
+    }
+  }
+}
+
+/**
  * 统一MutationObserver管理类
  * 使用单一观察器替代多个独立观察器，提升性能和稳定性
  */
@@ -896,7 +1130,7 @@ class UnifiedObserverManager {
   private retryTimer: ReturnType<typeof setTimeout> | null = null; // 添加重试定时器跟踪
   private styleChangeDetector = new StyleChangeDetector(); // 添加样式变化检测器
   private lastUpdateTime = 0; // 添加最后更新时间
-  private readonly UPDATE_THROTTLE = 50; // 更新节流时间（毫秒）- 增加到50ms减少频繁更新
+  private readonly UPDATE_THROTTLE = 100; // 更新节流时间（毫秒）- 增加到100ms大幅减少频繁更新（适合8000+块）
   public isScrolling = false; // 添加滚动状态标记
   private scrollEndTimer: ReturnType<typeof setTimeout> | null = null; // 滚动结束定时器
   
@@ -1181,9 +1415,11 @@ class UnifiedObserverManager {
   }
 }
 
-// 创建全局缓存实例
+// 创建全局缓存和队列实例
+const requestQueue = new RequestQueue();
 const dataCache = new DataCache();
 const domCache = new DOMCache();
+const visibilityObserver = new VisibilityObserver(); // 可见性观察器（用于只处理可见块）
 const unifiedObserver = new UnifiedObserverManager();
 
 // 将unifiedObserver暴露到全局，以便其他组件可以访问滚动状态
@@ -1310,7 +1546,7 @@ function debounceGetPanelBlockIds() {
       dataCache.clearAllCache();
       domCache.clearAllCache();
     }
-  }, 100); // 增加到100ms延迟，减少频繁更新
+  }, 30); // 增加到300ms延迟，大幅减少触发频率（适合8000+块的场景）
 }
 
 /**
@@ -1954,7 +2190,8 @@ async function getBlockStyleProperties(blockId: number): Promise<{ colorValue: s
   }
   
   try {
-    const block = await orca.invokeBackend("get-block", blockId);
+    // 使用请求队列限制并发请求数量
+    const block = await requestQueue.add(() => orca.invokeBackend("get-block", blockId));
     
     // 优化：提前返回，减少不必要的处理
     if (!block?.properties || !Array.isArray(block.properties)) {
@@ -2054,13 +2291,21 @@ function cleanupBlockStyles(blockElement: Element) {
 }
 
 /**
- * 处理单个面板的容器块（提取公共逻辑）
+ * 处理单个面板的容器块（提取公共逻辑，支持分批处理）
  */
 async function processPanelBlocks(panelId: string, panelElement: Element) {
   debugLog(`处理面板: ${panelId}`);
   
   // 使用DOM缓存获取容器块元素
   const containerElements = domCache.getContainerElements(panelId);
+  
+  // 性能优化：如果容器块数量超过500，分批处理
+  const BATCH_SIZE = 100; // 每批处理100个块
+  const shouldBatch = containerElements.length > 500;
+  
+  if (shouldBatch) {
+    debugLog(`面板 ${panelId} 有 ${containerElements.length} 个容器块，启用分批处理模式`);
+  }
   
   // 筛选出带标签的容器块，以及自身设置了_color的容器块和内联引用
   const taggedBlocksPromises: Promise<{ 
@@ -2086,9 +2331,17 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
     tagColors: string[]; // 多标签颜色数组
   } | null>[] = [];
   
-  // 优化：使用for循环替代Array.from().map，减少内存分配
+  // 优化：分批处理容器块，避免同时处理过多块导致UI阻塞
   for (let i = 0; i < containerElements.length; i++) {
     const element = containerElements[i];
+    
+    // 分批处理：每处理完一批，让出控制权，避免阻塞UI
+    if (shouldBatch && i > 0 && i % BATCH_SIZE === 0) {
+      debugLog(`已处理 ${i}/${containerElements.length} 个容器块，当前并发请求数: ${requestQueue.getRunningCount()}`);
+      // 让出控制权，避免阻塞UI
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    
     const promise = (async () => {
       // 查找该容器块下的 .orca-repr-main 元素
       const reprMainElement = element.querySelector('.orca-repr-main');
@@ -2107,8 +2360,8 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
       try {
         const blockIdNum = parseInt(dataId, 10);
         
-        // 1. 获取块的完整信息（包含refs）
-        const blockData = await orca.invokeBackend("get-block", blockIdNum);
+        // 1. 获取块的完整信息（包含refs），使用请求队列限制并发
+        const blockData = await requestQueue.add(() => orca.invokeBackend("get-block", blockIdNum));
         
         // 2. 从refs中获取前4个type=2的标签引用
         if (!blockData.refs || blockData.refs.length === 0) {
@@ -2340,8 +2593,8 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
           try {
             const blockIdNum = parseInt(refId, 10);
             
-            // 1. 获取块的完整信息（包含refs）
-            const blockData = await orca.invokeBackend("get-block", blockIdNum);
+            // 1. 获取块的完整信息（包含refs），使用请求队列限制并发
+            const blockData = await requestQueue.add(() => orca.invokeBackend("get-block", blockIdNum));
             
             // 2. 检查自身块是否设置了_color属性（最高优先级）
             const blockStyleProps = await getBlockStyleProperties(blockIdNum);
@@ -2546,22 +2799,29 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
           }
         });
         
-        // 批量应用样式
+        // 批量应用样式（使用可见性观察器优化）
         containerBlocks.forEach(block => {
           if (block) {
             const blockElements = allContainerElements.get(block.blockId);
             if (blockElements) {
               blockElements.forEach(blockElement => {
-                if (block.tagColors.length > 1) {
-                  applyMultiTagHandleColor(blockElement, block.displayColor, block.bgColorValue, block.iconValue, block.tagColors, block.colorSource);
-                } else {
-                  applyBlockHandleColor(blockElement, block.displayColor, block.bgColorValue, block.iconValue);
-                }
+                // 使用可见性观察器，只处理可见的块
+                visibilityObserver.observeElement(blockElement, {
+                  displayColor: block.displayColor,
+                  bgColorValue: block.bgColorValue,
+                  iconValue: block.iconValue,
+                  tagColors: block.tagColors,
+                  colorSource: block.colorSource
+                });
+                
+                // 仍然需要观察折叠/展开状态变化
                 observeBlockHandleCollapse(blockElement, block.displayColor, block.bgColorValue, block.iconValue, block.tagColors, block.colorSource);
               });
             }
           }
         });
+        
+        debugLog(`已为 ${containerBlocks.length} 个容器块设置可见性观察`);
       }
       
       // 优化：批量处理内联引用块，减少DOM查询和循环开销
@@ -2672,12 +2932,16 @@ export async function load(_name: string) {
   const settings = orca.state.plugins[pluginName]?.settings;
   if (settings?.enableTagValueColor) {
     orca.themes.injectCSSResource(`${pluginName}/dist/tag-value-color.css`, `${pluginName}-tag-value-color`);
+    cssInjected = true; // 标记CSS已注入
   }
 
   // 扩展渲染器以支持Tana自定义属性
   TanaRendererExtension.extendAllRenderers();
 
-
+  
+  // 启动可见性观察器（用于只处理可见块，提升大量块场景性能）
+  visibilityObserver.startObserver();
+  
   // 启动统一观察器
   unifiedObserver.startObserver();
   
@@ -2686,7 +2950,13 @@ export async function load(_name: string) {
     dataCache.cleanupExpiredCache();
     domCache.cleanupInvalidReferences(); // 添加DOM引用清理
     unifiedObserver.cleanupInvalidStyleReferences(); // 添加样式检测引用清理
-    debugLog('执行定期缓存、DOM引用和样式检测清理');
+    visibilityObserver.cleanupInvalidElements(); // 添加可见性观察器清理
+    
+    // 输出统计信息
+    debugLog('执行定期清理:', {
+      可见块数量: visibilityObserver.getVisibleCount(),
+      待处理块数量: visibilityObserver.getPendingCount()
+    });
   }, 5 * 60 * 1000); // 5分钟
   
   // 插件加载时延迟执行初始化（给DOM渲染留出时间）
@@ -2695,16 +2965,26 @@ export async function load(_name: string) {
 
   // 监听面板变化和设置变化
   if (window.Valtio?.subscribe) {
+    // 保存上一次的设置值，用于检测变化
+    let lastEnableTagValueColor = settings?.enableTagValueColor ?? false;
+    
     unsubscribe = window.Valtio.subscribe(orca.state, () => {
       // 检查标签值颜色设置变化
       const currentSettings = orca.state.plugins[pluginName]?.settings;
       const enableTagValueColor = currentSettings?.enableTagValueColor ?? false;
       
-      // 动态加载/卸载标签值颜色CSS
-      if (enableTagValueColor) {
-        orca.themes.injectCSSResource(`${pluginName}/dist/tag-value-color.css`, `${pluginName}-tag-value-color`);
-      } else {
-        orca.themes.removeCSSResources(`${pluginName}-tag-value-color`);
+      // 关键修复：只在设置真正变化时才加载/卸载CSS，避免重复注入
+      if (enableTagValueColor !== lastEnableTagValueColor) {
+        if (enableTagValueColor && !cssInjected) {
+          orca.themes.injectCSSResource(`${pluginName}/dist/tag-value-color.css`, `${pluginName}-tag-value-color`);
+          cssInjected = true;
+          debugLog('注入标签值颜色CSS');
+        } else if (!enableTagValueColor && cssInjected) {
+          orca.themes.removeCSSResources(`${pluginName}-tag-value-color`);
+          cssInjected = false;
+          debugLog('移除标签值颜色CSS');
+        }
+        lastEnableTagValueColor = enableTagValueColor;
       }
       
       // 使用防抖函数，避免频繁触发
@@ -2722,12 +3002,18 @@ export async function unload() {
   orca.themes.removeCSSResources(`${pluginName}-styles`);
   orca.themes.removeCSSResources(`${pluginName}-tag-value-color`);
   
+  // 停止可见性观察器
+  visibilityObserver.stopObserver();
+  
   // 停止统一观察器
   unifiedObserver.stopObserver();
   
   // 清理所有缓存
   dataCache.clearAllCache();
   domCache.clearAllCache();
+  
+  // 清理请求队列
+  requestQueue.clear();
   
   // 清理防抖定时器
   if (debounceTimer) {
@@ -2746,5 +3032,8 @@ export async function unload() {
     unsubscribe();
     unsubscribe = null;
   }
+  
+  // 重置CSS注入状态
+  cssInjected = false;
   
 }
