@@ -663,13 +663,14 @@ class DOMCache {
     const panelElement = this.getPanelElement(panelId);
     if (!panelElement) {
       // 优化：直接返回空列表，避免不必要的DOM查询
-      const emptyList = document.querySelectorAll('.orca-block.orca-container');
+      const emptyList = document.querySelectorAll('.orca-block[data-id]');
       this.containerElementsCache.set(cacheKey, emptyList);
       return emptyList;
     }
     
-    // 优化：使用更精确的选择器，减少查询范围
-    const elements = panelElement.querySelectorAll('.orca-block.orca-container');
+    // 优化：查询所有块元素（包括镜像块）
+    // 同时匹配 .orca-container 和镜像块的 class
+    const elements = panelElement.querySelectorAll('.orca-block[data-id]');
     this.containerElementsCache.set(cacheKey, elements);
     return elements;
   }
@@ -1158,7 +1159,7 @@ class UnifiedObserverManager {
       significantMutations.forEach(mutation => {
         if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
           const target = mutation.target as Element;
-          const containerBlock = target.closest('.orca-block.orca-container');
+          const containerBlock = target.closest('.orca-block[data-id]');
           if (containerBlock && this.observedElements.has(containerBlock)) {
             // 关键修复：只在真正的结构变化时才重置，而不是每次class变化都重置
             // 检查是否是重要的class变化（如折叠/展开状态变化）
@@ -1178,13 +1179,25 @@ class UnifiedObserverManager {
             if (node.nodeType === Node.ELEMENT_NODE) {
               const element = node as Element;
               
-              // 关键优化：检查是否是新插入的容器块，如果是则立即查找并应用样式
-              if (element.matches('.orca-block.orca-container')) {
-                const blockId = element.getAttribute('data-id');
+              // 关键优化：检查是否是新插入的容器块（包括镜像块），如果是则立即查找并应用样式
+              if (element.matches('.orca-block[data-id]')) {
+                // 对于镜像块，需要读取 data-mirror-id 作为原始块ID
+                // 对于普通块，用 data-id
+                const mirrorId = element.getAttribute('data-mirror-id');
+                const dataId = element.getAttribute('data-id');
+                
+                // 镜像块：用 data-mirror-id 查找配置
+                // 普通块：用 data-id 查找配置
+                const blockId = mirrorId || dataId;
                 if (blockId) {
-                  debugLog(`检测到新插入的容器块: ${blockId}，立即查找样式配置`);
-                  // 从 styleConfigByBlockId 查找样式配置
-                  const config = this.styleConfigByBlockId.get(blockId);
+                  debugLog(`检测到新插入的容器块: ${dataId}${mirrorId ? ' (镜像块，原始ID:' + mirrorId + ')' : ''}，查找样式配置（blockId=${blockId}）`);
+                  
+                  // 尝试多种方式查找配置
+                  let config = this.styleConfigByBlockId.get(blockId); // 原始块ID
+                  if (!config && dataId) {
+                    config = this.styleConfigByBlockId.get(dataId); // 镜像块的 data-id
+                  }
+                  
                   if (config) {
                     // 立即应用样式，不等待
                     if (config.tagColors && config.tagColors.length > 1) {
@@ -1192,15 +1205,20 @@ class UnifiedObserverManager {
                     } else {
                       applyBlockHandleColor(element, config.displayColor, config.bgColorValue, config.iconValue);
                     }
-                    debugLog(`为新插入的容器块应用样式: ${blockId}`);
+                    debugLog(`为新插入的容器块应用样式: ${dataId}, blockId=${blockId}`);
                     
                     // 注册到 observedElements 用于后续的折叠/展开监听
                     this.addObservedElement(element, config.displayColor, config.bgColorValue, config.iconValue, config.tagColors, config.colorSource);
+                    
+                    // 如果有 data-id，也注册配置到这个key（用于镜像块查找）
+                    if (dataId && dataId !== blockId) {
+                      (unifiedObserver as any).registerStyleConfig(dataId, config);
+                    }
                   }
                 }
               }
               
-              const containerBlock = element.closest('.orca-block.orca-container');
+              const containerBlock = element.closest('.orca-block[data-id]');
               if (containerBlock && this.observedElements.has(containerBlock)) {
                 // 子节点变化确实是结构变化，需要重置
                 debugLog(`检测到子节点变化，重置检测状态`);
@@ -1798,7 +1816,7 @@ function applyMultiTagHandleColor(blockElement: Element, displayColor: string, b
   if (handleElements.length > 0) {
     // 优化：预先过滤属于当前块的元素，减少循环中的DOM查询
     const validHandleElements = Array.from(handleElements).filter(handleElement => {
-      const handleParentBlock = handleElement.closest('.orca-block.orca-container');
+      const handleParentBlock = handleElement.closest('.orca-block[data-id]');
       return !handleParentBlock || handleParentBlock.getAttribute('data-id') === currentBlockId;
     });
     
@@ -1882,7 +1900,7 @@ function applyMultiTagHandleColor(blockElement: Element, displayColor: string, b
   if (colorSource === 'tag' && enableTitleColor && titleElements.length > 0) {
     // 优化：预先过滤属于当前块的标题元素
     const validTitleElements = Array.from(titleElements).filter(titleElement => {
-      const titleParentBlock = titleElement.closest('.orca-block.orca-container');
+      const titleParentBlock = titleElement.closest('.orca-block[data-id]');
       return !titleParentBlock || titleParentBlock.getAttribute('data-id') === currentBlockId;
     });
     
@@ -1902,7 +1920,7 @@ function applyMultiTagHandleColor(blockElement: Element, displayColor: string, b
     // 当设置关闭时，清除标题颜色样式
     // 优化：预先过滤属于当前块的标题元素
     const validTitleElements = Array.from(titleElements).filter(titleElement => {
-      const titleParentBlock = titleElement.closest('.orca-block.orca-container');
+      const titleParentBlock = titleElement.closest('.orca-block[data-id]');
       return !titleParentBlock || titleParentBlock.getAttribute('data-id') === currentBlockId;
     });
     
@@ -1919,7 +1937,7 @@ function applyMultiTagHandleColor(blockElement: Element, displayColor: string, b
   if (inlineElements.length > 0) {
     // 优化：预先过滤属于当前块的内联元素
     const validInlineElements = Array.from(inlineElements).filter(inlineElement => {
-      const inlineParentBlock = inlineElement.closest('.orca-block.orca-container');
+      const inlineParentBlock = inlineElement.closest('.orca-block[data-id]');
       return !inlineParentBlock || inlineParentBlock.getAttribute('data-id') === currentBlockId;
     });
     
@@ -1969,8 +1987,8 @@ function applyBlockHandleColor(blockElement: Element, displayColor: string, bgCo
   
   // 处理图标元素
   handleElements.forEach(handleElement => {
-    // 检查这个图标是否属于当前块（不是子块）
-    const handleParentBlock = handleElement.closest('.orca-block.orca-container');
+    // 检查这个图标是否属于当前块（不是子块），支持镜像块
+    const handleParentBlock = handleElement.closest('.orca-block[data-id]');
     if (handleParentBlock && handleParentBlock.getAttribute('data-id') !== currentBlockId) {
       return; // 跳过子块的图标
     }
@@ -2033,7 +2051,7 @@ function applyBlockHandleColor(blockElement: Element, displayColor: string, bgCo
   if (enableTitleColor) {
     titleElements.forEach(titleElement => {
       // 检查这个标题是否属于当前块（不是子块）
-      const titleParentBlock = titleElement.closest('.orca-block.orca-container');
+      const titleParentBlock = titleElement.closest('.orca-block[data-id]');
       if (titleParentBlock && titleParentBlock.getAttribute('data-id') !== currentBlockId) {
         return; // 跳过子块的标题
       }
@@ -2045,7 +2063,7 @@ function applyBlockHandleColor(blockElement: Element, displayColor: string, bgCo
   } else {
     // 当设置关闭时，清除标题颜色样式
     titleElements.forEach(titleElement => {
-      const titleParentBlock = titleElement.closest('.orca-block.orca-container');
+      const titleParentBlock = titleElement.closest('.orca-block[data-id]');
       if (titleParentBlock && titleParentBlock.getAttribute('data-id') !== currentBlockId) {
         return; // 跳过子块的标题
       }
@@ -2059,8 +2077,8 @@ function applyBlockHandleColor(blockElement: Element, displayColor: string, bgCo
   const enableInlineColor = settings?.enableInlineColor ?? false;
   
   inlineElements.forEach(inlineElement => {
-    // 检查这个内联元素是否属于当前块（不是子块）
-    const inlineParentBlock = inlineElement.closest('.orca-block.orca-container');
+    // 检查这个内联元素是否属于当前块（不是子块），支持镜像块
+    const inlineParentBlock = inlineElement.closest('.orca-block[data-id]');
     if (inlineParentBlock && inlineParentBlock.getAttribute('data-id') !== currentBlockId) {
       return; // 跳过子块的内联元素
     }
@@ -2208,10 +2226,10 @@ function cleanupBlockStyles(blockElement: Element) {
   const currentBlockId = blockElement.getAttribute('data-id');
   if (!currentBlockId) return;
   
-  // 清理图标元素
+  // 清理图标元素（包括镜像块）
   const handleElements = blockElement.querySelectorAll('.orca-block-handle');
   handleElements.forEach(handleElement => {
-    const handleParentBlock = handleElement.closest('.orca-block.orca-container');
+    const handleParentBlock = handleElement.closest('.orca-block[data-id]');
     if (handleParentBlock && handleParentBlock.getAttribute('data-id') === currentBlockId) {
       if (handleElement instanceof HTMLElement) {
         handleElement.style.removeProperty('color');
@@ -2222,10 +2240,10 @@ function cleanupBlockStyles(blockElement: Element) {
     }
   });
   
-  // 清理标题元素
+  // 清理标题元素（包括镜像块）
   const titleElements = blockElement.querySelectorAll('.orca-repr-title');
   titleElements.forEach(titleElement => {
-    const titleParentBlock = titleElement.closest('.orca-block.orca-container');
+    const titleParentBlock = titleElement.closest('.orca-block[data-id]');
     if (titleParentBlock && titleParentBlock.getAttribute('data-id') === currentBlockId) {
       if (titleElement instanceof HTMLElement) {
         titleElement.style.removeProperty('color');
@@ -2233,10 +2251,10 @@ function cleanupBlockStyles(blockElement: Element) {
     }
   });
   
-  // 清理内联元素
+  // 清理内联元素（包括镜像块）
   const inlineElements = blockElement.querySelectorAll('.orca-inline[data-type="t"]');
   inlineElements.forEach(inlineElement => {
-    const inlineParentBlock = inlineElement.closest('.orca-block.orca-container');
+    const inlineParentBlock = inlineElement.closest('.orca-block[data-id]');
     if (inlineParentBlock && inlineParentBlock.getAttribute('data-id') === currentBlockId) {
       if (inlineElement instanceof HTMLElement) {
         // 检查元素是否有 fc 类，如果有则跳过（fc 表示已设置过颜色）
@@ -2309,7 +2327,8 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
       
       if (!reprMainElement) return null;
       
-      const dataId = element.getAttribute('data-id');
+      // 关键：镜像块需要读取 data-mirror-id，而不是 data-id
+      const dataId = element.getAttribute('data-mirror-id') || element.getAttribute('data-id');
       if (!dataId) return null;
       
       // 检查 .orca-repr-main 下是否有 .orca-tags
@@ -2752,10 +2771,11 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
         const containerBlockIds = containerBlocks.map(block => block!.blockId);
         const allContainerElements = new Map<string, NodeListOf<Element>>();
         
-        // 一次性查询所有需要的容器块元素
+        // 一次性查询所有需要的容器块元素（包括镜像块）
         containerBlockIds.forEach(blockId => {
           if (!allContainerElements.has(blockId)) {
-            const elements = panelElement.querySelectorAll(`[data-id="${blockId}"]`);
+            // 同时查询 data-id 和 data-mirror-id，以支持镜像块
+            const elements = panelElement.querySelectorAll(`[data-id="${blockId}"], [data-mirror-id="${blockId}"]`);
             allContainerElements.set(blockId, elements);
           }
         });
@@ -2767,13 +2787,24 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
             if (blockElements) {
               blockElements.forEach(blockElement => {
                 // 关键优化：基于 blockId 注册样式配置，用于新插入元素的立即应用
-                (unifiedObserver as any).registerStyleConfig(block.blockId, {
+                const config = {
                   displayColor: block.displayColor,
                   bgColorValue: block.bgColorValue,
                   iconValue: block.iconValue,
                   tagColors: block.tagColors,
                   colorSource: block.colorSource
-                });
+                };
+                
+                // 注册到原始块ID（这是块的数据ID，不是镜像块ID）
+                (unifiedObserver as any).registerStyleConfig(block.blockId, config);
+                
+                // 如果这个元素是镜像块，需要注册到镜像块的 data-id（用于查找镜像块）
+                const elementDataId = blockElement.getAttribute('data-id');
+                if (elementDataId && elementDataId !== block.blockId) {
+                  // 这是一个镜像块，用镜像块的 data-id 作为key
+                  (unifiedObserver as any).registerStyleConfig(elementDataId, config);
+                  debugLog(`注册镜像块样式: 镜像data-id=${elementDataId}, 原始blockId=${block.blockId}`);
+                }
                 
                 // 立即应用样式
                 if (block.tagColors && block.tagColors.length > 1) {
