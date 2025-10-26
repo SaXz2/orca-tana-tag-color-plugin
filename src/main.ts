@@ -736,7 +736,7 @@ class DOMCache {
 
 /**
  * 样式变化检测管理类
- * 实现"检测三次"逻辑，避免不必要的样式应用
+ * 简化版：直接检测样式是否匹配
  */
 class StyleChangeDetector {
   private elementStyleStates = new Map<Element, {
@@ -748,21 +748,7 @@ class StyleChangeDetector {
       dataIcon: string;
       hasBoldClass: boolean; // 是否有 b 类
     };
-    appliedStyles: {
-      color: string;
-      backgroundColor: string;
-      backgroundImage: string;
-      opacity: string;
-      dataIcon: string;
-      hasBoldClass: boolean; // 是否有 b 类
-    };
-    changeCount: number;
-    lastChangeTime: number;
-    isStable: boolean; // 是否稳定（连续三次无变化）
   }>();
-  
-  private readonly MAX_CHANGE_COUNT = 3; // 最大变化检测次数
-  private readonly STABLE_THRESHOLD = 100; // 稳定状态阈值（毫秒）- 降低阈值，更快进入稳定状态
   
   /**
    * 获取元素当前应用的样式状态
@@ -806,11 +792,7 @@ class StyleChangeDetector {
     };
     
     this.elementStyleStates.set(element, {
-      expectedStyles: extendedExpectedStyles,
-      appliedStyles,
-      changeCount: 0,
-      lastChangeTime: performance.now(),
-      isStable: false
+      expectedStyles: extendedExpectedStyles
     });
     
     debugLog(`记录元素期望样式:`, extendedExpectedStyles);
@@ -845,7 +827,7 @@ class StyleChangeDetector {
       return false;
     }
     
-    // 检查应用的样式是否与期望的样式一致
+    // 简化检测逻辑：直接检查样式是否匹配
     const stylesMatch = (
       cachedState.expectedStyles.color === currentAppliedStyles.color &&
       cachedState.expectedStyles.backgroundColor === currentAppliedStyles.backgroundColor &&
@@ -855,40 +837,13 @@ class StyleChangeDetector {
       cachedState.expectedStyles.hasBoldClass === currentAppliedStyles.hasBoldClass
     );
     
-    if (!stylesMatch) {
-      // 样式不匹配，需要更新
-      cachedState.changeCount = 0;
-      cachedState.lastChangeTime = performance.now();
-      cachedState.isStable = false;
-      debugLog(`元素样式不匹配，需要更新样式`);
-      return true;
+    if (stylesMatch) {
+      // 样式匹配，跳过更新
+      debugLog(`元素样式匹配，跳过更新`);
+      return false;
     } else {
-      // 样式匹配，增加稳定计数
-      cachedState.changeCount++;
-      const now = performance.now();
-      
-      // 如果连续检测到样式匹配，标记为稳定状态
-      if (cachedState.changeCount >= this.MAX_CHANGE_COUNT) {
-        cachedState.isStable = true;
-        cachedState.lastChangeTime = now; // 更新稳定时间
-        debugLog(`元素样式稳定，连续${this.MAX_CHANGE_COUNT}次匹配`);
-      }
-      
-      // 检查是否应该停止检测（稳定且超过阈值时间）
-      if (cachedState.isStable && (now - cachedState.lastChangeTime) > this.STABLE_THRESHOLD) {
-        debugLog(`元素样式长期稳定，跳过更新`);
-        return false;
-      }
-      
-      // 关键修复：样式匹配时，如果尚未达到稳定状态，仍然需要更新
-      // 但如果已经达到稳定状态，则不需要更新
-      if (cachedState.isStable) {
-        debugLog(`元素样式已稳定，跳过更新`);
-        return false;
-      }
-      
-      // 样式匹配但尚未稳定，需要继续更新直到稳定
-      debugLog(`样式匹配但尚未稳定，继续更新 (${cachedState.changeCount}/${this.MAX_CHANGE_COUNT})`);
+      // 样式不匹配，需要更新
+      debugLog(`元素样式不匹配，需要更新样式`);
       return true;
     }
   }
@@ -1000,17 +955,20 @@ class VisibilityObserver {
       colorSource?: 'block' | 'tag';
     }
   ): void {
+    // 关键修复：立即应用样式，不等待 IntersectionObserver
+    this.applyStyles(element, config);
+    
     if (!this.observer) return;
     
     // 保存配置
     this.pendingElements.set(element, config);
     
-    // 开始观察
+    // 开始观察（用于后续 DOM 变化）
     this.observer.observe(element);
     
-    // 如果元素已经可见，立即应用样式
+    // 如果元素已经可见，添加到可见集合
     if (this.isVisible(element)) {
-      this.applyStyles(element, config);
+      this.visibleElements.add(element);
     }
   }
   
@@ -1127,10 +1085,31 @@ class UnifiedObserverManager {
     tagColors?: string[]; // 添加多标签颜色数组
     colorSource?: 'block' | 'tag'; // 添加颜色来源
   }>();
+  // 添加基于 blockId 的样式配置映射，用于新插入元素的立即样式应用
+  private styleConfigByBlockId = new Map<string, {
+    displayColor: string;
+    bgColorValue: string;
+    iconValue: string | null;
+    tagColors?: string[];
+    colorSource?: 'block' | 'tag';
+  }>();
+  
+  /**
+   * 注册基于 blockId 的样式配置（用于新插入元素的立即样式应用）
+   */
+  registerStyleConfig(blockId: string, config: {
+    displayColor: string;
+    bgColorValue: string;
+    iconValue: string | null;
+    tagColors?: string[];
+    colorSource?: 'block' | 'tag';
+  }): void {
+    this.styleConfigByBlockId.set(blockId, config);
+  }
   private retryTimer: ReturnType<typeof setTimeout> | null = null; // 添加重试定时器跟踪
   private styleChangeDetector = new StyleChangeDetector(); // 添加样式变化检测器
   private lastUpdateTime = 0; // 添加最后更新时间
-  private readonly UPDATE_THROTTLE = 100; // 更新节流时间（毫秒）- 增加到100ms大幅减少频繁更新（适合8000+块）
+  private readonly UPDATE_THROTTLE = 16; // 更新节流时间（毫秒）- 降低到16ms（约1帧），避免延迟
   public isScrolling = false; // 添加滚动状态标记
   private scrollEndTimer: ReturnType<typeof setTimeout> | null = null; // 滚动结束定时器
   
@@ -1146,12 +1125,6 @@ class UnifiedObserverManager {
     this.setupScrollListener();
     
     this.observer = new MutationObserver((mutations) => {
-      // 如果正在滚动，跳过样式更新，避免闪烁
-      if (this.isScrolling) {
-        debugLog(`正在滚动中，跳过样式更新`);
-        return;
-      }
-      
       // 批量处理所有变化，避免频繁重绘
       const elementsToUpdate = new Set<Element>();
       
@@ -1204,6 +1177,29 @@ class UnifiedObserverManager {
           mutation.addedNodes.forEach(node => {
             if (node.nodeType === Node.ELEMENT_NODE) {
               const element = node as Element;
+              
+              // 关键优化：检查是否是新插入的容器块，如果是则立即查找并应用样式
+              if (element.matches('.orca-block.orca-container')) {
+                const blockId = element.getAttribute('data-id');
+                if (blockId) {
+                  debugLog(`检测到新插入的容器块: ${blockId}，立即查找样式配置`);
+                  // 从 styleConfigByBlockId 查找样式配置
+                  const config = this.styleConfigByBlockId.get(blockId);
+                  if (config) {
+                    // 立即应用样式，不等待
+                    if (config.tagColors && config.tagColors.length > 1) {
+                      applyMultiTagHandleColor(element, config.displayColor, config.bgColorValue, config.iconValue, config.tagColors, config.colorSource || 'tag');
+                    } else {
+                      applyBlockHandleColor(element, config.displayColor, config.bgColorValue, config.iconValue);
+                    }
+                    debugLog(`为新插入的容器块应用样式: ${blockId}`);
+                    
+                    // 注册到 observedElements 用于后续的折叠/展开监听
+                    this.addObservedElement(element, config.displayColor, config.bgColorValue, config.iconValue, config.tagColors, config.colorSource);
+                  }
+                }
+              }
+              
               const containerBlock = element.closest('.orca-block.orca-container');
               if (containerBlock && this.observedElements.has(containerBlock)) {
                 // 子节点变化确实是结构变化，需要重置
@@ -1216,24 +1212,19 @@ class UnifiedObserverManager {
         }
       });
       
-      // 添加更新节流，避免过于频繁的更新
-      const now = performance.now();
-      if (now - this.lastUpdateTime < this.UPDATE_THROTTLE) {
-        debugLog(`更新频率过高，跳过本次更新`);
-        return;
-      }
-      this.lastUpdateTime = now;
+      // 移除节流限制，立即更新样式
+      // const now = performance.now();
+      // if (now - this.lastUpdateTime < this.UPDATE_THROTTLE) {
+      //   debugLog(`更新频率过高，跳过本次更新`);
+      //   return;
+      // }
+      // this.lastUpdateTime = now;
       
-      // 批量更新所有需要更新的元素（使用样式变化检测器优化）
+      // 批量更新所有需要更新的元素（直接更新，不检测）
       elementsToUpdate.forEach(element => {
-        // 使用样式变化检测器判断是否需要更新
-        if (!this.styleChangeDetector.needsStyleUpdate(element)) {
-          debugLog(`元素样式稳定，跳过更新`);
-          return;
-        }
-        
         const config = this.observedElements.get(element);
         if (config) {
+          // 直接应用样式，立即更新
           // 根据标签数量决定使用哪个函数
           if (config.tagColors && config.tagColors.length > 1) {
             // 多标签：使用多标签处理函数
@@ -1243,11 +1234,11 @@ class UnifiedObserverManager {
             applyBlockHandleColor(element, config.displayColor, config.bgColorValue, config.iconValue);
           }
           
-          // 记录期望的样式状态，用于后续检测
+          // 立即记录期望样式，避免延迟
           this.styleChangeDetector.recordExpectedStyles(element, {
             color: config.displayColor,
             backgroundColor: config.bgColorValue,
-            backgroundImage: '', // 这个会在应用函数中设置
+            backgroundImage: '',
             opacity: '1',
             dataIcon: config.iconValue || ''
           });
@@ -1813,48 +1804,42 @@ function applyMultiTagHandleColor(blockElement: Element, displayColor: string, b
     
     validHandleElements.forEach(handleElement => {
       if (handleElement instanceof HTMLElement) {
-        // 多标签时叠加颜色在 Orca 默认颜色上
-        if (tagColors.length > 1) {
-          // 使用第一个标签的颜色叠加在默认颜色上
-          handleElement.style.setProperty('color', displayColor);
-        }
-        // 单标签时保持原有逻辑（在 applyBlockHandleColor 中处理）
+        // 同步执行所有 DOM 操作，确保样式立即应用
+        // 1. 设置前景颜色
+        handleElement.style.setProperty('color', displayColor);
         
-        // 设置图标属性
+        // 2. 设置图标属性
         if (iconValue) {
           // 检查是否为 Tabler Icons 格式（以 "ti " 开头）
           if (iconValue.startsWith('ti ')) {
-            // Tabler Icons 格式，使用 requestAnimationFrame 避免频繁 DOM 操作
-            requestAnimationFrame(() => {
-              const iconClasses = iconValue.split(' ').filter(cls => cls.trim() !== '');
-              
-              // 移除所有现有的 Tabler Icons 类（包括 ti、ti- 开头的所有类）
-              const existingClasses = Array.from(handleElement.classList);
-              existingClasses.forEach(cls => {
-                if (cls === 'ti' || cls.startsWith('ti-')) {
-                  handleElement.classList.remove(cls);
-                }
-              });
-              
-              // 添加新的图标类
-              iconClasses.forEach(cls => {
-                if (cls.trim() !== '') {
-                  handleElement.classList.add(cls);
-                }
-              });
-              
-              debugLog(`块 ${currentBlockId} 的图标是 Tabler Icons 格式: "${iconValue}"，来源: ${colorSource}，覆盖旧图标类`);
+            const iconClasses = iconValue.split(' ').filter(cls => cls.trim() !== '');
+            
+            // 移除所有现有的 Tabler Icons 类（包括 ti、ti- 开头的所有类）
+            const existingClasses = Array.from(handleElement.classList);
+            existingClasses.forEach(cls => {
+              if (cls === 'ti' || cls.startsWith('ti-')) {
+                handleElement.classList.remove(cls);
+              }
             });
+            
+            // 添加新的图标类
+            iconClasses.forEach(cls => {
+              if (cls.trim() !== '') {
+                handleElement.classList.add(cls);
+              }
+            });
+            
+            debugLog(`块 ${currentBlockId} 的图标是 Tabler Icons 格式: "${iconValue}"，来源: ${colorSource}，覆盖旧图标类`);
           } else {
             // 其他格式，设置 data-icon 属性
             handleElement.setAttribute('data-icon', iconValue);
             debugLog(`为块 ${currentBlockId} 的图标设置 data-icon="${iconValue}"，来源: ${colorSource}`);
           }
         } else {
-          debugLog(`块 ${currentBlockId} 没有图标值，跳过设置 data-icon`);
+          debugLog(`块 ${currentBlockId} 没有图标值，跳过设置图标`);
         }
         
-        // 根据标签数量决定处理方式
+        // 3. 根据标签数量决定背景样式处理方式
         if (tagColors.length === 1) {
           // 单标签：使用原有的单标签逻辑
           if (handleElement.classList.contains('orca-block-handle-collapsed')) {
@@ -1869,25 +1854,22 @@ function applyMultiTagHandleColor(blockElement: Element, displayColor: string, b
             handleElement.style.setProperty('opacity', '1', 'important');
           }
         } else {
-          // 多标签：使用 requestAnimationFrame 安全地添加 collapsed 类
-          requestAnimationFrame(() => {
-            // 检查是否已经有 collapsed 类，避免重复添加
-            if (!handleElement.classList.contains('orca-block-handle-collapsed')) {
-              handleElement.classList.add('orca-block-handle-collapsed');
-            }
-            
-            const multiColorBg = generateMultiColorBackground(tagColors);
-            if (multiColorBg) {
-              handleElement.style.setProperty('background-image', multiColorBg, 'important');
-              handleElement.style.removeProperty('background-color');
-            } else {
-              // 清除背景样式
-              handleElement.style.removeProperty('background-color');
-              handleElement.style.removeProperty('background-image');
-            }
-            // 确保完全不透明
-            handleElement.style.setProperty('opacity', '1', 'important');
-          });
+          // 多标签：添加 collapsed 类并设置渐变背景
+          if (!handleElement.classList.contains('orca-block-handle-collapsed')) {
+            handleElement.classList.add('orca-block-handle-collapsed');
+          }
+          
+          const multiColorBg = generateMultiColorBackground(tagColors);
+          if (multiColorBg) {
+            handleElement.style.setProperty('background-image', multiColorBg, 'important');
+            handleElement.style.removeProperty('background-color');
+          } else {
+            // 清除背景样式
+            handleElement.style.removeProperty('background-color');
+            handleElement.style.removeProperty('background-image');
+          }
+          // 确保完全不透明
+          handleElement.style.setProperty('opacity', '1', 'important');
         }
       }
     });
@@ -1993,34 +1975,32 @@ function applyBlockHandleColor(blockElement: Element, displayColor: string, bgCo
       return; // 跳过子块的图标
     }
     if (handleElement instanceof HTMLElement) {
-      // 设置前景颜色（可能是 domColor 或 colorValue）
+      // 同步执行所有 DOM 操作，确保样式立即应用
+      // 1. 设置前景颜色
       handleElement.style.setProperty('color', displayColor);
       
-      // 设置图标属性（统一处理所有格式）
+      // 2. 设置图标属性（统一处理所有格式）
       if (iconValue) {
         // 检查是否为 Tabler Icons 格式（以 "ti " 开头）
         if (iconValue.startsWith('ti ')) {
-          // Tabler Icons 格式，使用 requestAnimationFrame 避免频繁 DOM 操作
-          requestAnimationFrame(() => {
-            const iconClasses = iconValue.split(' ').filter(cls => cls.trim() !== '');
-            
-            // 移除所有现有的 Tabler Icons 类（包括 ti、ti- 开头的所有类）
-            const existingClasses = Array.from(handleElement.classList);
-            existingClasses.forEach(cls => {
-              if (cls === 'ti' || cls.startsWith('ti-')) {
-                handleElement.classList.remove(cls);
-              }
-            });
-            
-            // 添加新的图标类
-            iconClasses.forEach(cls => {
-              if (cls.trim() !== '') {
-                handleElement.classList.add(cls);
-              }
-            });
-            
-            debugLog(`块 ${currentBlockId} 的图标是 Tabler Icons 格式: "${iconValue}"，覆盖旧图标类`);
+          const iconClasses = iconValue.split(' ').filter(cls => cls.trim() !== '');
+          
+          // 移除所有现有的 Tabler Icons 类（包括 ti、ti- 开头的所有类）
+          const existingClasses = Array.from(handleElement.classList);
+          existingClasses.forEach(cls => {
+            if (cls === 'ti' || cls.startsWith('ti-')) {
+              handleElement.classList.remove(cls);
+            }
           });
+          
+          // 添加新的图标类
+          iconClasses.forEach(cls => {
+            if (cls.trim() !== '') {
+              handleElement.classList.add(cls);
+            }
+          });
+          
+          debugLog(`块 ${currentBlockId} 的图标是 Tabler Icons 格式: "${iconValue}"，覆盖旧图标类`);
         } else {
           // 其他格式，设置 data-icon 属性
           handleElement.setAttribute('data-icon', iconValue);
@@ -2031,13 +2011,15 @@ function applyBlockHandleColor(blockElement: Element, displayColor: string, bgCo
       }
       // 注意：不在这里移除 data-icon，避免清理自身块设置的图标
       
-      // 如果有 orca-block-handle-collapsed 类，设置背景颜色（始终使用 colorValue，透明度 0.45）
+      // 3. 根据折叠状态设置背景颜色
       if (handleElement.classList.contains('orca-block-handle-collapsed')) {
         const bgColor = hexToRgba(bgColorValue, 0.45);
         handleElement.style.setProperty('background-color', bgColor, 'important');
+        handleElement.style.removeProperty('background-image');
       } else {
         // 没有折叠类时，清除背景颜色
         handleElement.style.removeProperty('background-color');
+        handleElement.style.removeProperty('background-image');
         // 确保非折叠状态下完全不透明
         handleElement.style.setProperty('opacity', '1', 'important');
       }
@@ -2160,7 +2142,7 @@ function observeBlockHandleCollapse(blockElement: Element, displayColor: string,
  * @param maxCount 最大获取数量，默认为1
  * @returns 有效的标签属性数组（有颜色或有图标）
  */
-async function getFirstValidTagProps(tagRefs: any[], maxCount: number = 1): Promise<any[]> {
+function getFirstValidTagProps(tagRefs: any[], maxCount: number = 1): any[] {
   const validTagProps: any[] = [];
   
   for (const ref of tagRefs) {
@@ -2168,7 +2150,7 @@ async function getFirstValidTagProps(tagRefs: any[], maxCount: number = 1): Prom
       break; // 已经找到足够的标签，停止处理
     }
     
-    const tagProps = await getBlockStyleProperties(ref.to);
+    const tagProps = getBlockStyleProperties(ref.to);
     // 检查是否有颜色或有图标（任一即可）
     if ((tagProps.colorEnabled && tagProps.colorValue) || (tagProps.iconEnabled && tagProps.iconValue)) {
       validTagProps.push({ ...tagProps, blockId: ref.to });
@@ -2179,65 +2161,44 @@ async function getFirstValidTagProps(tagRefs: any[], maxCount: number = 1): Prom
 }
 
 /**
- * 获取块的 _color 和 _icon 属性值（使用缓存优化）
+ * 获取块的 _color 和 _icon 属性值（直接同步读取，无延迟）
  * @returns { colorValue: string | null, iconValue: string | null, colorEnabled: boolean, iconEnabled: boolean }
  */
-async function getBlockStyleProperties(blockId: number): Promise<{ colorValue: string | null; iconValue: string | null; colorEnabled: boolean; iconEnabled: boolean }> {
-  // 先尝试从缓存获取
-  const cached = dataCache.getBlockProperties(blockId);
-  if (cached) {
-    return cached;
+function getBlockStyleProperties(blockId: number): { colorValue: string | null; iconValue: string | null; colorEnabled: boolean; iconEnabled: boolean } {
+  // 关键优化：直接从 orca.state.blocks 同步读取，避免 await 延迟
+  const block = orca.state.blocks[blockId];
+  
+  if (!block?.properties || !Array.isArray(block.properties)) {
+    return { colorValue: null, iconValue: null, colorEnabled: false, iconEnabled: false };
   }
   
-  try {
-    // 使用请求队列限制并发请求数量
-    const block = await requestQueue.add(() => orca.invokeBackend("get-block", blockId));
-    
-    // 优化：提前返回，减少不必要的处理
-    if (!block?.properties || !Array.isArray(block.properties)) {
-      const result = { colorValue: null, iconValue: null, colorEnabled: false, iconEnabled: false };
-      dataCache.setBlockProperties(blockId, result);
-      return result;
+  // 使用更高效的属性查找
+  const properties = block.properties;
+  let colorProperty: any = null;
+  let iconProperty: any = null;
+  
+  // 使用for循环替代for...of，性能更好
+  for (let i = 0; i < properties.length; i++) {
+    const prop = properties[i];
+    if (prop.name === "_color") {
+      colorProperty = prop;
+      if (iconProperty) break; // 两个都找到了，提前退出
+    } else if (prop.name === "_icon") {
+      iconProperty = prop;
+      if (colorProperty) break; // 两个都找到了，提前退出
     }
-    
-    // 优化：使用更高效的属性查找
-    const properties = block.properties;
-    let colorProperty: any = null;
-    let iconProperty: any = null;
-    
-    // 使用for循环替代for...of，性能更好
-    for (let i = 0; i < properties.length; i++) {
-      const prop = properties[i];
-      if (prop.name === "_color") {
-        colorProperty = prop;
-        if (iconProperty) break; // 两个都找到了，提前退出
-      } else if (prop.name === "_icon") {
-        iconProperty = prop;
-        if (colorProperty) break; // 两个都找到了，提前退出
-      }
-    }
-    
-    // 优化：简化条件判断
-    const colorEnabled = colorProperty?.type === 1;
-    const iconEnabled = iconProperty?.type === 1;
-    
-    const result = {
-      colorValue: colorEnabled ? (colorProperty.value || null) : null,
-      iconValue: iconEnabled ? (iconProperty.value || null) : null,
-      colorEnabled: !!colorEnabled,
-      iconEnabled: !!iconEnabled
-    };
-    
-    // 缓存结果
-    dataCache.setBlockProperties(blockId, result);
-    
-    return result;
-  } catch (error) {
-    // 优化：减少错误处理开销
-    const result = { colorValue: null, iconValue: null, colorEnabled: false, iconEnabled: false };
-    dataCache.setBlockProperties(blockId, result);
-    return result;
   }
+  
+  // 简化条件判断
+  const colorEnabled = colorProperty?.type === 1;
+  const iconEnabled = iconProperty?.type === 1;
+  
+  return {
+    colorValue: colorEnabled ? (colorProperty.value || null) : null,
+    iconValue: iconEnabled ? (iconProperty.value || null) : null,
+    colorEnabled: !!colorEnabled,
+    iconEnabled: !!iconEnabled
+  };
 }
 
 /**
@@ -2360,11 +2321,11 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
       try {
         const blockIdNum = parseInt(dataId, 10);
         
-        // 1. 获取块的完整信息（包含refs），使用请求队列限制并发
-        const blockData = await requestQueue.add(() => orca.invokeBackend("get-block", blockIdNum));
+        // 1. 直接从 orca.state.blocks 获取块的完整信息（包含refs），同步读取无延迟
+        const blockData = orca.state.blocks[blockIdNum];
         
         // 2. 从refs中获取前4个type=2的标签引用
-        if (!blockData.refs || blockData.refs.length === 0) {
+        if (!blockData?.refs || blockData.refs.length === 0) {
           // 没有引用信息，清理样式
           cleanupBlockStyles(element);
           return null; // 没有引用信息，跳过
@@ -2400,7 +2361,7 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
         
         // 使用公共函数获取有效的标签属性（有颜色或有图标），最多取前4个
         // 现在使用排序后的标签引用
-        const validTagProps = await getFirstValidTagProps(sortedTagRefs, 4);
+        const validTagProps = getFirstValidTagProps(sortedTagRefs, 4);
         
         if (validTagProps.length === 0) {
           // 有标签但没有有效标签（无颜色无图标），清理样式
@@ -2415,7 +2376,7 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
         const firstTagProps = validTagProps[0];
         
         // 4. 检查容器块本身是否启用了颜色且有值（最高优先级）
-        const blockStyleProps = await getBlockStyleProperties(blockIdNum);
+        const blockStyleProps = getBlockStyleProperties(blockIdNum);
         
         // 如果容器块本身启用了颜色且有值，使用自身块的颜色（最高优先级）
         if (blockStyleProps.colorEnabled && blockStyleProps.colorValue) {
@@ -2535,7 +2496,7 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
         const blockIdNum = parseInt(dataId, 10);
         
         // 检查容器块自身是否设置了_color属性
-        const blockStyleProps = await getBlockStyleProperties(blockIdNum);
+        const blockStyleProps = getBlockStyleProperties(blockIdNum);
         
         if (blockStyleProps.colorEnabled && blockStyleProps.colorValue) {
           const finalDomColor = calculateDomColor(blockStyleProps.colorValue);
@@ -2593,11 +2554,11 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
           try {
             const blockIdNum = parseInt(refId, 10);
             
-            // 1. 获取块的完整信息（包含refs），使用请求队列限制并发
-            const blockData = await requestQueue.add(() => orca.invokeBackend("get-block", blockIdNum));
+            // 1. 直接从 orca.state.blocks 获取块的完整信息（包含refs），同步读取无延迟
+            const blockData = orca.state.blocks[blockIdNum];
             
             // 2. 检查自身块是否设置了_color属性（最高优先级）
-            const blockStyleProps = await getBlockStyleProperties(blockIdNum);
+            const blockStyleProps = getBlockStyleProperties(blockIdNum);
             
             if (blockStyleProps.colorEnabled && blockStyleProps.colorValue) {
               const finalDomColor = calculateDomColor(blockStyleProps.colorValue);
@@ -2606,10 +2567,10 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
               let finalIconValue = blockStyleProps.iconValue;
               
               // 如果自身块没有图标，尝试从第一个标签获取
-              if (!finalIconValue && blockData.refs && blockData.refs.length > 0) {
+              if (!finalIconValue && blockData?.refs && blockData.refs.length > 0) {
                 const firstTagRef = blockData.refs.find((ref: any) => ref.type === 2);
                 if (firstTagRef && firstTagRef.to) {
-                  const tagStyleProps = await getBlockStyleProperties(firstTagRef.to);
+                  const tagStyleProps = getBlockStyleProperties(firstTagRef.to);
                   finalIconValue = tagStyleProps.iconValue;
                 }
               }
@@ -2627,7 +2588,7 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
             }
             
             // 3. 如果自身块没有颜色，尝试从第一个有颜色的标签读取
-            if (!blockData.refs || blockData.refs.length === 0) {
+            if (!blockData?.refs || blockData.refs.length === 0) {
               return null; // 没有引用信息，跳过
             }
             
@@ -2638,7 +2599,7 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
             }
             
             // 使用公共函数获取第一个有颜色的标签属性
-            const coloredTagProps = await getFirstValidTagProps(allTagRefs, 1);
+            const coloredTagProps = getFirstValidTagProps(allTagRefs, 1);
             
             if (coloredTagProps.length === 0) {
               return null; // 没有有颜色的标签，跳过
@@ -2799,14 +2760,14 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
           }
         });
         
-        // 批量应用样式（使用可见性观察器优化）
+        // 批量应用样式
         containerBlocks.forEach(block => {
           if (block) {
             const blockElements = allContainerElements.get(block.blockId);
             if (blockElements) {
               blockElements.forEach(blockElement => {
-                // 使用可见性观察器，只处理可见的块
-                visibilityObserver.observeElement(blockElement, {
+                // 关键优化：基于 blockId 注册样式配置，用于新插入元素的立即应用
+                (unifiedObserver as any).registerStyleConfig(block.blockId, {
                   displayColor: block.displayColor,
                   bgColorValue: block.bgColorValue,
                   iconValue: block.iconValue,
@@ -2814,14 +2775,21 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
                   colorSource: block.colorSource
                 });
                 
-                // 仍然需要观察折叠/展开状态变化
+                // 立即应用样式
+                if (block.tagColors && block.tagColors.length > 1) {
+                  applyMultiTagHandleColor(blockElement, block.displayColor, block.bgColorValue, block.iconValue, block.tagColors, block.colorSource);
+                } else {
+                  applyBlockHandleColor(blockElement, block.displayColor, block.bgColorValue, block.iconValue);
+                }
+                
+                // 观察折叠/展开状态变化
                 observeBlockHandleCollapse(blockElement, block.displayColor, block.bgColorValue, block.iconValue, block.tagColors, block.colorSource);
               });
             }
           }
         });
         
-        debugLog(`已为 ${containerBlocks.length} 个容器块设置可见性观察`);
+        debugLog(`已为 ${containerBlocks.length} 个容器块立即应用样式`);
       }
       
       // 优化：批量处理内联引用块，减少DOM查询和循环开销
@@ -2959,9 +2927,9 @@ export async function load(_name: string) {
     });
   }, 5 * 60 * 1000); // 5分钟
   
-  // 插件加载时延迟执行初始化（给DOM渲染留出时间）
-  debugLog(`将在 ${INITIAL_DELAY}ms 后开始初始化`);
-  setTimeout(() => initializeWithRetry(), INITIAL_DELAY);
+  // 插件加载时立即执行初始化（同步读取数据，无需延迟）
+  debugLog(`立即开始初始化`);
+  initializeWithRetry();
 
   // 监听面板变化和设置变化
   if (window.Valtio?.subscribe) {
