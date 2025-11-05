@@ -1122,6 +1122,7 @@ class UnifiedObserverManager {
   private readonly UPDATE_THROTTLE = 16; // 更新节流时间（毫秒）- 降低到16ms（约1帧），避免延迟
   public isScrolling = false; // 添加滚动状态标记
   private scrollEndTimer: ReturnType<typeof setTimeout> | null = null; // 滚动结束定时器
+  private processingElements = new Set<Element>(); // 正在处理的元素集合，防止重复处理
   
   /**
    * 启动统一观察器（优化版本：只观察面板容器）
@@ -1170,6 +1171,12 @@ class UnifiedObserverManager {
           const target = mutation.target as Element;
           const containerBlock = target.closest('.orca-block[data-id]');
           if (containerBlock && this.observedElements.has(containerBlock)) {
+            // 关键修复：如果元素正在处理中，说明是我们代码添加的class，不需要重置
+            if (this.processingElements.has(containerBlock)) {
+              debugLog(`元素正在处理中，忽略class变化（避免无限循环）`);
+              return; // 跳过，不添加到 elementsToUpdate
+            }
+            
             // 关键修复：只在真正的结构变化时才重置，而不是每次class变化都重置
             // 检查是否是重要的class变化（如折叠/展开状态变化）
             const targetClasses = target.classList.toString();
@@ -1247,30 +1254,58 @@ class UnifiedObserverManager {
       // }
       // this.lastUpdateTime = now;
       
-      // 批量更新所有需要更新的元素（直接更新，不检测）
-      elementsToUpdate.forEach(element => {
+      // 批量更新所有需要更新的元素（先检查是否需要更新，避免无限循环）
+      // 关键修复：先过滤掉正在处理中的元素，避免重复处理
+      const elementsToProcess = Array.from(elementsToUpdate).filter(element => {
+        if (this.processingElements.has(element)) {
+          debugLog(`元素正在处理中，跳过重复处理`);
+          return false;
+        }
+        return true;
+      });
+      
+      elementsToProcess.forEach(element => {
         const config = this.observedElements.get(element);
         if (config) {
-          // 直接应用样式，立即更新
-          // 根据标签数量决定使用哪个函数
-          if (config.tagColors && config.tagColors.length > 1) {
-            // 多标签：使用多标签处理函数
-            applyMultiTagHandleColor(element, config.displayColor, config.bgColorValue, config.iconValue, config.tagColors, config.colorSource || 'tag');
-          } else {
-            // 单标签：使用原有的单标签处理函数
-            applyBlockHandleColor(element, config.displayColor, config.bgColorValue, config.iconValue);
+          // 关键修复：应用样式前先检查是否需要更新
+          // 如果样式已经匹配，跳过更新，避免触发新的 MutationObserver 回调
+          if (!this.styleChangeDetector.needsStyleUpdate(element)) {
+            debugLog(`元素样式已匹配，跳过更新，避免无限循环`);
+            return;
           }
           
-          // 立即记录期望样式，避免延迟
-          this.styleChangeDetector.recordExpectedStyles(element, {
-            color: config.displayColor,
-            backgroundColor: config.bgColorValue,
-            backgroundImage: '',
-            opacity: '1',
-            dataIcon: config.iconValue || ''
-          });
+          // 关键修复：在应用样式之前就标记为正在处理中，防止应用样式时添加class触发新的MutationObserver回调
+          this.processingElements.add(element);
           
-          debugLog(`应用样式更新到元素`);
+          try {
+            // 根据标签数量决定使用哪个函数
+            if (config.tagColors && config.tagColors.length > 1) {
+              // 多标签：使用多标签处理函数
+              applyMultiTagHandleColor(element, config.displayColor, config.bgColorValue, config.iconValue, config.tagColors, config.colorSource || 'tag');
+            } else {
+              // 单标签：使用原有的单标签处理函数
+              applyBlockHandleColor(element, config.displayColor, config.bgColorValue, config.iconValue);
+            }
+            
+            // 立即记录期望样式，避免延迟
+            this.styleChangeDetector.recordExpectedStyles(element, {
+              color: config.displayColor,
+              backgroundColor: config.bgColorValue,
+              backgroundImage: '',
+              opacity: '1',
+              dataIcon: config.iconValue || ''
+            });
+            
+            debugLog(`应用样式更新到元素`);
+          } finally {
+            // 处理完成后，延迟移除标记，避免立即触发新的 MutationObserver 回调
+            // 使用 requestAnimationFrame 确保在下一帧才移除，给 MutationObserver 足够的缓冲时间
+            requestAnimationFrame(() => {
+              setTimeout(() => {
+                this.processingElements.delete(element);
+              }, 50); // 缩短延迟时间到50ms，提高响应速度
+            });
+          }
         }
       });
     });
