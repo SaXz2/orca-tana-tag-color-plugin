@@ -50,3 +50,6 @@ temp/
 
 # Plugin specific
 *.zip
+
+# Documentation
+plugin-docs/
