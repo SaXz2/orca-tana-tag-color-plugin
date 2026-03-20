@@ -43,7 +43,14 @@ jobs:
         
     - name: Create release archive
       run: |
-        cd dist
+        mkdir -p release-package/dist
+        cp dist/index.js release-package/dist/
+        cp dist/styles.css release-package/dist/
+        cp dist/tag-value-color.css release-package/dist/
+        cp package.json release-package/
+        cp LICENSE release-package/
+        cp icon.svg release-package/
+        cd release-package
         zip -r ../orca-tana-tag-color-plugin-v${{ steps.package-version.outputs.VERSION }}.zip .
         cd ..
         

@@ -40,6 +40,8 @@ jobs:
           cp dist/index.js release-package/dist/
           cp dist/styles.css release-package/dist/
           cp dist/tag-value-color.css release-package/dist/
+          cp package.json release-package/
+          cp LICENSE release-package/
           cp icon.svg release-package/
           cp README.md release-package/
           cd release-package
