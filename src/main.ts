@@ -763,6 +763,99 @@ class DOMCache {
 }
 
 /**
+ * 后端获取的块数据缓存
+ * 用于缓存从 orca.invokeBackend("get-block") 获取的块数据，避免重复请求
+ */
+const fetchedBlockCache = new Map<number, any>();
+const pendingBlockRequests = new Map<number, Promise<any | null>>(); // 防止并发请求同一块
+const FETCHED_BLOCK_CACHE_TTL = 30000; // 30秒过期
+
+/**
+ * 从块数据中提取样式属性（_color 和 _icon）
+ * 可用于从 state 或后端获取的块数据
+ */
+function extractStylePropsFromBlockData(blockData: any): {
+  colorValue: string | null;
+  iconValue: string | null;
+  colorEnabled: boolean;
+  iconEnabled: boolean;
+} {
+  if (!blockData?.properties || !Array.isArray(blockData.properties)) {
+    return { colorValue: null, iconValue: null, colorEnabled: false, iconEnabled: false };
+  }
+
+  let colorProp: any = null;
+  let iconProp: any = null;
+
+  for (const prop of blockData.properties) {
+    if (prop.name === "_color") {
+      colorProp = prop;
+      if (iconProp) break;
+    } else if (prop.name === "_icon") {
+      iconProp = prop;
+      if (colorProp) break;
+    }
+  }
+
+  const colorEnabled = colorProp?.type === 1;
+  const iconEnabled = iconProp?.type === 1;
+
+  return {
+    colorValue: colorEnabled ? (colorProp.value || null) : null,
+    iconValue: iconEnabled ? (iconProp.value || null) : null,
+    colorEnabled: !!colorEnabled,
+    iconEnabled: !!iconEnabled,
+  };
+}
+
+/**
+ * 异步获取块数据，优先从 state 读取，不在 state 中时从后端 API 获取
+ * 解决块引用目标块未打开时无法获取颜色的 bug
+ */
+async function getBlockDataAsync(blockId: number): Promise<any | null> {
+  // 1. 优先从 state 读取
+  const blockInState = orca.state.blocks[blockId];
+  if (blockInState) return blockInState;
+
+  // 2. 检查后端获取缓存
+  const cached = fetchedBlockCache.get(blockId);
+  if (cached !== undefined) {
+    if (cached === null || performance.now() - cached._fetchedAt > FETCHED_BLOCK_CACHE_TTL) {
+      fetchedBlockCache.delete(blockId);
+    } else {
+      return cached;
+    }
+  }
+
+  // 3. 检查是否有正在进行的请求（防止并发重复请求）
+  const pending = pendingBlockRequests.get(blockId);
+  if (pending) return pending;
+
+  // 4. 从后端 API 获取
+  const requestPromise = (async () => {
+    try {
+      const block = await orca.invokeBackend("get-block", blockId);
+      if (block) {
+        block._fetchedAt = performance.now();
+        fetchedBlockCache.set(blockId, block);
+        return block;
+      }
+      fetchedBlockCache.set(blockId, null);
+      return null;
+    } catch (error) {
+      debugError(`异步获取块 ${blockId} 数据失败:`, error);
+      fetchedBlockCache.set(blockId, null);
+      return null;
+    } finally {
+      pendingBlockRequests.delete(blockId);
+    }
+  })();
+
+  pendingBlockRequests.set(blockId, requestPromise);
+  return requestPromise;
+}
+
+/**
  * 样式变化检测管理类
  * 简化版：直接检测样式是否匹配
  */
@@ -2594,19 +2687,20 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
         const promise = (async () => {
           try {
             const blockIdNum = parseInt(refId, 10);
-            
-            // 1. 直接从 orca.state.blocks 获取块的完整信息（包含refs），同步读取无延迟
-            const blockData = orca.state.blocks[blockIdNum];
-            
-            // 2. 检查自身块是否设置了_color属性（最高优先级）
-            const blockStyleProps = getBlockStyleProperties(blockIdNum);
-            
+
+            // 1. 异步获取块数据，如果不在 state 中则从后端 API 获取
+            const blockData = await getBlockDataAsync(blockIdNum);
+            if (!blockData) return null;
+
+            // 2. 从块数据中直接提取样式属性（避免再次查询 state）
+            const blockStyleProps = extractStylePropsFromBlockData(blockData);
+
             if (blockStyleProps.colorEnabled && blockStyleProps.colorValue) {
               const finalDomColor = calculateDomColor(blockStyleProps.colorValue);
-              
+
               // 对于内联引用，如果自身块有颜色但无图标，尝试从标签获取图标
               let finalIconValue = blockStyleProps.iconValue;
-              
+
               // 如果自身块没有图标，尝试从第一个标签获取
               if (!finalIconValue && blockData?.refs && blockData.refs.length > 0) {
                 const firstTagRef = blockData.refs.find((ref: any) => ref.type === 2);
@@ -2615,7 +2709,7 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
                   finalIconValue = tagStyleProps.iconValue;
                 }
               }
-              
+
               return {
                 blockId: refId,
                 aliasBlockId: blockIdNum, // 使用自身块ID
@@ -2627,30 +2721,39 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
                 tagColors: [blockStyleProps.colorValue] // 单色情况
               };
             }
-            
+
             // 3. 如果自身块没有颜色，尝试从第一个有颜色的标签读取
             if (!blockData?.refs || blockData.refs.length === 0) {
               return null; // 没有引用信息，跳过
             }
-            
+
             // 找到所有type=2的引用（标签）
             const allTagRefs = blockData.refs.filter((ref: any) => ref.type === 2);
             if (allTagRefs.length === 0) {
               return null; // 没有标签引用，跳过
             }
-            
-            // 使用公共函数获取第一个有颜色的标签属性
-            const coloredTagProps = getFirstValidTagProps(allTagRefs, 1);
-            
+
+            // 异步获取第一个有颜色的标签属性（标签块可能也不在 state 中）
+            let coloredTagProps: any[] = [];
+            for (const ref of allTagRefs) {
+              const tagBlockData = await getBlockDataAsync(ref.to);
+              if (!tagBlockData) continue;
+              const tagProps = extractStylePropsFromBlockData(tagBlockData);
+              if ((tagProps.colorEnabled && tagProps.colorValue) || (tagProps.iconEnabled && tagProps.iconValue)) {
+                coloredTagProps.push({ ...tagProps, blockId: ref.to });
+                break; // 只需要第一个
+              }
+            }
+
             if (coloredTagProps.length === 0) {
               return null; // 没有有颜色的标签，跳过
             }
-            
+
             const firstColoredTagProps = coloredTagProps[0];
             const aliasBlockId = firstColoredTagProps.blockId;
-            
+
             const finalDomColor = calculateDomColor(firstColoredTagProps.colorValue);
-            
+
             return {
               blockId: refId,
               aliasBlockId: aliasBlockId, // 使用标签块ID
@@ -2963,7 +3066,15 @@ export async function load(_name: string) {
     domCache.cleanupInvalidReferences(); // 添加DOM引用清理
     unifiedObserver.cleanupInvalidStyleReferences(); // 添加样式检测引用清理
     visibilityObserver.cleanupInvalidElements(); // 添加可见性观察器清理
-    
+
+    // 清理过期的后端获取块缓存
+    const now = performance.now();
+    for (const [blockId, cached] of fetchedBlockCache.entries()) {
+      if (cached && now - cached._fetchedAt > FETCHED_BLOCK_CACHE_TTL) {
+        fetchedBlockCache.delete(blockId);
+      }
+    }
+
     // 输出统计信息
     debugLog('执行定期清理:', {
       可见块数量: visibilityObserver.getVisibleCount(),
@@ -3023,6 +3134,8 @@ export async function unload() {
   // 清理所有缓存
   dataCache.clearAllCache();
   domCache.clearAllCache();
+  fetchedBlockCache.clear();
+  pendingBlockRequests.clear();
   
   // 清理请求队列
   requestQueue.clear();

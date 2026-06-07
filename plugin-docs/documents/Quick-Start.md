@@ -366,6 +366,8 @@ interface Block {
 }
 ```
 
+The `_repr` property is a special object that defines the block's type and stores additional metadata used by renderers and converters. It is stored as an object of type `Repr` named `_repr` within the block's `properties` array. When implementing custom block renderers, the fields within `_repr` are automatically passed as props to your React component.
+
 ### Panel
 
 Panels are the main organizational units of the UI:
@@ -482,9 +484,8 @@ type Props = {
   blockLevel: number
   indentLevel: number
   mirrorId?: DbId
-  withBreadcrumb?: boolean
   initiallyCollapsed?: boolean
-  renderingMode?: "normal" | "simple" | "simple-children" | "readonly"
+  renderingMode?: "normal" | "simple" | "simple-children"
   keyword: string // Prop to receive from _repr
 }
 
@@ -495,7 +496,6 @@ export default function MapBlockRenderer({
   blockLevel,
   indentLevel,
   mirrorId,
-  withBreadcrumb,
   initiallyCollapsed,
   renderingMode,
   keyword, // Received from _repr
@@ -524,7 +524,6 @@ export default function MapBlockRenderer({
       mirrorId={mirrorId}
       blockLevel={blockLevel}
       indentLevel={indentLevel}
-      withBreadcrumb={withBreadcrumb}
       initiallyCollapsed={initiallyCollapsed}
       renderingMode={renderingMode}
       reprClassName="myplugin-repr-map" // Custom class for the block shell

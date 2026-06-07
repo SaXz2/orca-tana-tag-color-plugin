@@ -52,6 +52,14 @@ export default defineConfig(({ command }) => {
             copyFileSync(srcTagValuePath, distTagValuePath);
             console.log('✅ Copied src/tag-value-color.css to dist/tag-value-color.css');
           }
+
+          // 复制tana-styles.css
+          const srcTanaStylesPath = resolve(process.cwd(), 'src/tana-styles.css');
+          const distTanaStylesPath = resolve(distDir, 'tana-styles.css');
+          if (existsSync(srcTanaStylesPath)) {
+            copyFileSync(srcTanaStylesPath, distTanaStylesPath);
+            console.log('✅ Copied src/tana-styles.css to dist/tana-styles.css');
+          }
         }
       }
     ],

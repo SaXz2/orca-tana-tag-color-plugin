@@ -1,6 +1,7 @@
 /* Tana 标签颜色插件 - 兼容性样式 */
 
-
+/* 导入Tana自定义属性样式 */
+@import './tana-styles.css';
 
 
 
