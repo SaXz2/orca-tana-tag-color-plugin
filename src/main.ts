@@ -34,6 +34,13 @@ interface ProcessedBlockInfo extends TaggedBlockInfo {
   bgColorValue: string | null;
 }
 
+type StyleProps = {
+  colorValue: string | null;
+  iconValue: string | null;
+  colorEnabled: boolean;
+  iconEnabled: boolean;
+};
+
 /**
  * Tana自定义属性系统
  * 基于dom_style_application_mechanism.md实现自动样式应用
@@ -778,12 +785,7 @@ const FETCHED_BLOCK_CACHE_TTL = 5000; // 5秒过期，与 DataCache 保持一致
  * 从块数据中提取样式属性（_color 和 _icon）
  * 可用于从 state 或后端获取的块数据
  */
-function extractStylePropsFromBlockData(blockData: any): {
-  colorValue: string | null;
-  iconValue: string | null;
-  colorEnabled: boolean;
-  iconEnabled: boolean;
-} {
+function extractStylePropsFromBlockData(blockData: any): StyleProps {
   if (!blockData?.properties || !Array.isArray(blockData.properties)) {
     return { colorValue: null, iconValue: null, colorEnabled: false, iconEnabled: false };
   }
@@ -810,6 +812,143 @@ function extractStylePropsFromBlockData(blockData: any): {
     colorEnabled: !!colorEnabled,
     iconEnabled: !!iconEnabled,
   };
+}
+
+class BlockStyleCache {
+  private cache = new Map<number, { props: StyleProps; timestamp: number }>();
+  private readonly CACHE_TTL = 5000;
+
+  get(blockId: number, blockData: any): StyleProps {
+    const cached = this.cache.get(blockId);
+    const now = performance.now();
+
+    if (cached && now - cached.timestamp <= this.CACHE_TTL) {
+      return cached.props;
+    }
+
+    const props = extractStylePropsFromBlockData(blockData);
+    this.cache.set(blockId, { props, timestamp: now });
+    return props;
+  }
+
+  invalidate(blockId: number): void {
+    this.cache.delete(blockId);
+  }
+
+  invalidateMany(blockIds: Iterable<number>): void {
+    for (const blockId of blockIds) {
+      this.invalidate(blockId);
+    }
+  }
+
+  cleanupExpired(): void {
+    const now = performance.now();
+    for (const [blockId, cached] of this.cache.entries()) {
+      if (now - cached.timestamp > this.CACHE_TTL) {
+        this.cache.delete(blockId);
+      }
+    }
+  }
+
+  clear(): void {
+    this.cache.clear();
+  }
+}
+
+class StyleDependencyIndex {
+  private blockToTags = new Map<string, Set<number>>();
+  private tagToBlocks = new Map<number, Set<string>>();
+
+  setDependencies(blockId: string, tagIds: Iterable<number>): void {
+    this.clearBlock(blockId);
+
+    const tags = new Set(tagIds);
+    if (tags.size === 0) return;
+
+    this.blockToTags.set(blockId, tags);
+    tags.forEach(tagId => {
+      let blocks = this.tagToBlocks.get(tagId);
+      if (!blocks) {
+        blocks = new Set<string>();
+        this.tagToBlocks.set(tagId, blocks);
+      }
+      blocks.add(blockId);
+    });
+  }
+
+  clearBlock(blockId: string): void {
+    const oldTags = this.blockToTags.get(blockId);
+    if (!oldTags) return;
+
+    oldTags.forEach(tagId => {
+      const blocks = this.tagToBlocks.get(tagId);
+      if (!blocks) return;
+      blocks.delete(blockId);
+      if (blocks.size === 0) {
+        this.tagToBlocks.delete(tagId);
+      }
+    });
+
+    this.blockToTags.delete(blockId);
+  }
+
+  getDependentBlocks(tagId: number): string[] {
+    return Array.from(this.tagToBlocks.get(tagId) ?? []);
+  }
+
+  clear(): void {
+    this.blockToTags.clear();
+    this.tagToBlocks.clear();
+  }
+}
+
+class BlockChangeTracker {
+  private signatures = new Map<string, string>();
+
+  collectChangedBlocks(): string[] {
+    const changed = new Set<string>();
+    const currentIds = new Set<string>();
+
+    Object.entries(orca.state.blocks).forEach(([id, block]) => {
+      if (!block) return;
+
+      currentIds.add(id);
+      const signature = this.createSignature(block);
+      if (this.signatures.get(id) !== signature) {
+        this.signatures.set(id, signature);
+        changed.add(id);
+      }
+    });
+
+    for (const id of Array.from(this.signatures.keys())) {
+      if (!currentIds.has(id)) {
+        this.signatures.delete(id);
+        changed.add(id);
+      }
+    }
+
+    return Array.from(changed);
+  }
+
+  reset(): void {
+    this.signatures.clear();
+    Object.entries(orca.state.blocks).forEach(([id, block]) => {
+      if (block) {
+        this.signatures.set(id, this.createSignature(block));
+      }
+    });
+  }
+
+  clear(): void {
+    this.signatures.clear();
+  }
+
+  private createSignature(block: any): string {
+    return JSON.stringify({
+      properties: block?.properties ?? null,
+      refs: block?.refs ?? null
+    });
+  }
 }
 
 /**
@@ -1326,20 +1465,12 @@ class UnifiedObserverManager {
                   }
                   
                   if (config) {
-                    // 立即应用样式，不等待
-                    if (config.tagColors && config.tagColors.length > 1) {
-                      applyMultiTagHandleColor(element, config.displayColor, config.bgColorValue, config.iconValue, config.tagColors, config.colorSource || 'tag');
-                    } else {
-                      applyBlockHandleColor(element, config.displayColor, config.bgColorValue, config.iconValue);
-                    }
-                    debugLog(`为新插入的容器块应用样式: ${dataId}, blockId=${blockId}`);
-                    
-                    // 注册到 observedElements 用于后续的折叠/展开监听
-                    this.addObservedElement(element, config.displayColor, config.bgColorValue, config.iconValue, config.tagColors, config.colorSource);
+                    debounceGetPanelBlockIds([blockId]);
+                    debugLog(`检测到新插入的容器块，交给增量刷新: ${dataId}, blockId=${blockId}`);
                     
                     // 如果有 data-id，也注册配置到这个key（用于镜像块查找）
                     if (dataId && dataId !== blockId) {
-                      (unifiedObserver as any).registerStyleConfig(dataId, config);
+                      unifiedObserver.registerStyleConfig(dataId, config);
                     }
                   }
                 }
@@ -1544,6 +1675,10 @@ class UnifiedObserverManager {
     this.observedElements.clear();
     this.styleChangeDetector.clearAllStates();
   }
+
+  clearStyleConfigCache(): void {
+    this.styleConfigByBlockId.clear();
+  }
   
   /**
    * 清理失效的样式检测引用
@@ -1571,6 +1706,9 @@ class UnifiedObserverManager {
 const requestQueue = new RequestQueue();
 const dataCache = new DataCache();
 const domCache = new DOMCache();
+const blockStyleCache = new BlockStyleCache();
+const styleDependencyIndex = new StyleDependencyIndex();
+const blockChangeTracker = new BlockChangeTracker();
 const visibilityObserver = new VisibilityObserver(); // 可见性观察器（用于只处理可见块）
 const unifiedObserver = new UnifiedObserverManager();
 
@@ -1582,6 +1720,7 @@ let retryCount: number = 0;
 const MAX_RETRY_COUNT = 3; // 最大重试次数
 const RETRY_DELAY = 100; // 重试延迟（毫秒）- 降低延迟实现快速响应
 const INITIAL_DELAY = 100; // 初始延迟（毫秒）- 降低延迟实现快速启动
+const INCREMENTAL_REFRESH_LIMIT = 50; // 变化块过多时回退全量刷新
 
 // 定义设置 schema
 const settingsSchema = {
@@ -1667,7 +1806,7 @@ function collectViewPanels(panel: any): any[] {
 /**
  * 防抖执行函数（优化异步处理和响应速度）
  */
-function debounceGetPanelBlockIds() {
+function debounceGetPanelBlockIds(changedBlockIds?: string[]) {
   if (debounceTimer) {
     clearTimeout(debounceTimer);
   }
@@ -1678,7 +1817,7 @@ function debounceGetPanelBlockIds() {
       if (unifiedObserver && unifiedObserver.isScrolling) {
         debugLog(`滚动中，延迟执行样式更新`);
         // 重新设置定时器，等待滚动结束
-        debounceTimer = setTimeout(() => debounceGetPanelBlockIds(), 200);
+        debounceTimer = setTimeout(() => debounceGetPanelBlockIds(changedBlockIds), 200);
         return;
       }
       
@@ -1686,17 +1825,31 @@ function debounceGetPanelBlockIds() {
       if (domCache.checkPanelStructureChange()) {
         domCache.clearAllCache();
         dataCache.clearAllCache();
+        blockStyleCache.clear();
+        styleDependencyIndex.clear();
+        blockChangeTracker.reset();
         // 刷新观察器以观察新的面板容器
         unifiedObserver.refreshObserver();
+        await getAllPanelBlockIds();
+        return;
       }
       
-      // 直接执行，避免嵌套异步调用
+      if (changedBlockIds && changedBlockIds.length > 0) {
+        if (changedBlockIds.length <= INCREMENTAL_REFRESH_LIMIT) {
+          const didRefresh = await refreshBlocksByIds(changedBlockIds);
+          if (didRefresh) return;
+        } else {
+          debugLog(`变化块数量 ${changedBlockIds.length} 超过增量阈值，回退全量刷新`);
+        }
+      }
+
       await getAllPanelBlockIds();
     } catch (error) {
       debugError('执行getAllPanelBlockIds时发生错误:', error);
       // 清理缓存，避免错误状态持续
       dataCache.clearAllCache();
       domCache.clearAllCache();
+      blockStyleCache.clear();
     }
   }, 30); // 增加到300ms延迟，大幅减少触发频率（适合8000+块的场景）
 }
@@ -2348,6 +2501,111 @@ function observeBlockHandleCollapse(blockElement: Element, displayColor: string 
   unifiedObserver.addObservedElement(blockElement, displayColor, bgColorValue, iconValue, tagColors, colorSource);
 }
 
+function getProcessedBlocks(taggedBlocks: TaggedBlockInfo[]): ProcessedBlockInfo[] {
+  const settings = orca.state.plugins[pluginName]?.settings;
+  const useDomColor = settings?.useDomColor ?? false;
+
+  return taggedBlocks
+    .map(block => {
+      if (!block.colorValue && !block.iconValue) return null;
+
+      let displayColor: string | null;
+      if (!block.colorValue) {
+        displayColor = null;
+      } else if (block.colorSource === 'block') {
+        displayColor = block.colorValue;
+      } else if (isDarkMode() && useDomColor) {
+        displayColor = block.domColor || block.colorValue;
+      } else {
+        displayColor = block.colorValue;
+      }
+
+      return {
+        ...block,
+        displayColor,
+        bgColorValue: block.colorValue,
+        iconValue: block.iconValue
+      };
+    })
+    .filter((block): block is ProcessedBlockInfo => block !== null);
+}
+
+function applyProcessedBlocks(panelElement: Element, processedBlocks: ProcessedBlockInfo[]): void {
+  if (processedBlocks.length === 0) return;
+
+  const containerBlocks = processedBlocks.filter(block => block.elementType === 'container');
+  const inlineBlocks = processedBlocks.filter(block => block.elementType === 'inline-ref');
+
+  if (containerBlocks.length > 0) {
+    const allContainerElements = new Map<string, NodeListOf<Element>>();
+
+    containerBlocks.forEach(block => {
+      if (!allContainerElements.has(block.blockId)) {
+        const elements = panelElement.querySelectorAll(`[data-id="${block.blockId}"], [data-mirror-id="${block.blockId}"]`);
+        allContainerElements.set(block.blockId, elements);
+      }
+    });
+
+    containerBlocks.forEach(block => {
+      const blockElements = allContainerElements.get(block.blockId);
+      if (!blockElements) return;
+
+      const config: StyleConfig = {
+        displayColor: block.displayColor,
+        bgColorValue: block.bgColorValue,
+        iconValue: block.iconValue,
+        tagColors: block.tagColors,
+        colorSource: block.colorSource
+      };
+
+      blockElements.forEach(blockElement => {
+        unifiedObserver.registerStyleConfig(block.blockId, config);
+
+        const elementDataId = blockElement.getAttribute('data-id');
+        if (elementDataId && elementDataId !== block.blockId) {
+          unifiedObserver.registerStyleConfig(elementDataId, config);
+          debugLog(`注册镜像块样式: 镜像data-id=${elementDataId}, 原始blockId=${block.blockId}`);
+        }
+
+        if (block.tagColors && block.tagColors.length > 1) {
+          applyMultiTagHandleColor(blockElement, block.displayColor, block.bgColorValue, block.iconValue, block.tagColors, block.colorSource);
+        } else {
+          applyBlockHandleColor(blockElement, block.displayColor, block.bgColorValue, block.iconValue);
+        }
+
+        observeBlockHandleCollapse(blockElement, block.displayColor, block.bgColorValue, block.iconValue, block.tagColors, block.colorSource);
+      });
+    });
+
+    debugLog(`已为 ${containerBlocks.length} 个容器块立即应用样式`);
+  }
+
+  if (inlineBlocks.length > 0) {
+    const inlineBlockIds = inlineBlocks.map(block => block.blockId);
+    const allInlineElements = panelElement.querySelectorAll('.orca-inline[data-ref]');
+    const inlineElementsByBlockId = new Map<string, Element[]>();
+
+    allInlineElements.forEach(element => {
+      const refId = element.getAttribute('data-ref');
+      if (refId && inlineBlockIds.includes(refId)) {
+        if (!inlineElementsByBlockId.has(refId)) {
+          inlineElementsByBlockId.set(refId, []);
+        }
+        inlineElementsByBlockId.get(refId)!.push(element);
+      }
+    });
+
+    inlineBlocks.forEach(block => {
+      const elements = inlineElementsByBlockId.get(block.blockId);
+      if (!elements) return;
+
+      elements.forEach(element => {
+        applyInlineRefColor(element, block.displayColor, block.tagColors, block.colorSource);
+      });
+    });
+  }
+}
+
 /**
  * 异步从标签引用中获取有效的标签属性（有颜色或有图标的标签）
  * 当标签块不在 state 中时，从后端 API 获取
@@ -2365,7 +2623,7 @@ async function getFirstValidTagProps(tagRefs: any[], maxCount: number = 1): Prom
 
     const tagBlockData = await getBlockDataAsync(ref.to);
     if (!tagBlockData) continue;
-    const tagProps = extractStylePropsFromBlockData(tagBlockData);
+    const tagProps = blockStyleCache.get(Number(ref.to), tagBlockData);
     if ((tagProps.colorEnabled && tagProps.colorValue) || (tagProps.iconEnabled && tagProps.iconValue)) {
       validTagProps.push({ ...tagProps, blockId: ref.to });
     }
@@ -2444,6 +2702,7 @@ async function processContainerBlockWithTags(
     
     // 2. 从refs中获取前4个type=2的标签引用
     if (!blockData?.refs || blockData.refs.length === 0) {
+      styleDependencyIndex.clearBlock(dataId);
       cleanupBlockStyles(element);
       return null;
     }
@@ -2469,9 +2728,12 @@ async function processContainerBlockWithTags(
     }
     
     if (sortedTagRefs.length === 0) {
+      styleDependencyIndex.clearBlock(dataId);
       cleanupBlockStyles(element);
       return null;
     }
+
+    styleDependencyIndex.setDependencies(dataId, sortedTagRefs.map((ref: any) => Number(ref.to)).filter((id: number) => Number.isFinite(id)));
     
     // 使用公共函数获取有效的标签属性，最多取前4个
     const validTagProps = await getFirstValidTagProps(sortedTagRefs, 4);
@@ -2482,7 +2744,7 @@ async function processContainerBlockWithTags(
     }
 
     const firstTagProps = validTagProps[0];
-    const blockStyleProps = extractStylePropsFromBlockData(blockData);
+    const blockStyleProps = blockStyleCache.get(blockIdNum, blockData);
     
     // 检查容器块本身是否启用了颜色且有值（最高优先级）
     if (blockStyleProps.colorEnabled && blockStyleProps.colorValue) {
@@ -2588,7 +2850,8 @@ async function processContainerBlockWithoutTags(element: Element, dataId: string
   try {
     const blockIdNum = parseInt(dataId, 10);
     const blockData = orca.state.blocks[blockIdNum];
-    const blockStyleProps = extractStylePropsFromBlockData(blockData || {});
+    const blockStyleProps = blockStyleCache.get(blockIdNum, blockData || {});
+    styleDependencyIndex.clearBlock(dataId);
     
     if (blockStyleProps.colorEnabled && blockStyleProps.colorValue) {
       const finalDomColor = calculateDomColor(blockStyleProps.colorValue);
@@ -2619,6 +2882,96 @@ async function processContainerBlockWithoutTags(element: Element, dataId: string
     }
     
     cleanupBlockStyles(element);
+    return null;
+  } catch (error) {
+    return null;
+  }
+}
+
+async function processSingleContainerElement(element: Element, panelId: string): Promise<TaggedBlockInfo | null> {
+  const reprMainElement = element.querySelector('.orca-repr-main');
+  if (!reprMainElement) return null;
+
+  const dataId = element.getAttribute('data-mirror-id') || element.getAttribute('data-id');
+  if (!dataId) return null;
+
+  const tagsElement = reprMainElement.querySelector('.orca-tags');
+  const hasTags = tagsElement && tagsElement.querySelector('.orca-tag');
+
+  if (hasTags) {
+    return await processContainerBlockWithTags(element, dataId, panelId);
+  }
+
+  return await processContainerBlockWithoutTags(element, dataId);
+}
+
+async function processInlineRefBlock(refId: string): Promise<TaggedBlockInfo | null> {
+  try {
+    const blockIdNum = parseInt(refId, 10);
+    const blockData = await getBlockDataAsync(blockIdNum);
+    if (!blockData) return null;
+
+    const blockStyleProps = blockStyleCache.get(blockIdNum, blockData);
+
+    if (blockStyleProps.colorEnabled && blockStyleProps.colorValue) {
+      const finalDomColor = calculateDomColor(blockStyleProps.colorValue);
+      let finalIconValue = blockStyleProps.iconValue;
+
+      if (!finalIconValue && blockData?.refs && blockData.refs.length > 0) {
+        const firstTagRef = blockData.refs.find((ref: any) => ref.type === 2);
+        if (firstTagRef && firstTagRef.to) {
+          const tagBlockData = await getBlockDataAsync(firstTagRef.to);
+          if (tagBlockData) {
+            const tagStyleProps = blockStyleCache.get(Number(firstTagRef.to), tagBlockData);
+            finalIconValue = tagStyleProps.iconValue;
+          }
+        }
+      }
+
+      return {
+        blockId: refId,
+        aliasBlockId: blockIdNum,
+        colorValue: blockStyleProps.colorValue,
+        iconValue: finalIconValue,
+        colorSource: 'block' as const,
+        domColor: finalDomColor,
+        elementType: 'inline-ref' as const,
+        tagColors: [blockStyleProps.colorValue]
+      };
+    }
+
+    if (!blockData?.refs || blockData.refs.length === 0) {
+      styleDependencyIndex.clearBlock(refId);
+      return null;
+    }
+
+    const allTagRefs = blockData.refs.filter((ref: any) => ref.type === 2);
+    if (allTagRefs.length === 0) {
+      styleDependencyIndex.clearBlock(refId);
+      return null;
+    }
+
+    styleDependencyIndex.setDependencies(refId, allTagRefs.map((ref: any) => Number(ref.to)).filter((id: number) => Number.isFinite(id)));
+
+    for (const ref of allTagRefs) {
+      const tagBlockData = await getBlockDataAsync(ref.to);
+      if (!tagBlockData) continue;
+
+      const tagProps = blockStyleCache.get(Number(ref.to), tagBlockData);
+      if ((tagProps.colorEnabled && tagProps.colorValue) || (tagProps.iconEnabled && tagProps.iconValue)) {
+        return {
+          blockId: refId,
+          aliasBlockId: ref.to,
+          colorValue: tagProps.colorValue,
+          iconValue: tagProps.iconValue,
+          colorSource: 'tag' as const,
+          domColor: tagProps.colorValue ? calculateDomColor(tagProps.colorValue) : null,
+          elementType: 'inline-ref' as const,
+          tagColors: tagProps.colorValue ? [tagProps.colorValue] : []
+        };
+      }
+    }
+
     return null;
   } catch (error) {
     return null;
@@ -2695,95 +3048,7 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
     if (inlineElement) {
       const refId = inlineElement.getAttribute('data-ref');
       if (refId) {
-        const promise = (async () => {
-          try {
-            const blockIdNum = parseInt(refId, 10);
-
-            // 1. 异步获取块数据，如果不在 state 中则从后端 API 获取
-            const blockData = await getBlockDataAsync(blockIdNum);
-            if (!blockData) return null;
-
-            // 2. 从块数据中直接提取样式属性（避免再次查询 state）
-            const blockStyleProps = extractStylePropsFromBlockData(blockData);
-
-            if (blockStyleProps.colorEnabled && blockStyleProps.colorValue) {
-              const finalDomColor = calculateDomColor(blockStyleProps.colorValue);
-
-              // 对于内联引用，如果自身块有颜色但无图标，尝试从标签获取图标
-              let finalIconValue = blockStyleProps.iconValue;
-
-              // 如果自身块没有图标，异步获取第一个标签的图标
-              if (!finalIconValue && blockData?.refs && blockData.refs.length > 0) {
-                const firstTagRef = blockData.refs.find((ref: any) => ref.type === 2);
-                if (firstTagRef && firstTagRef.to) {
-                  const tagBlockData = await getBlockDataAsync(firstTagRef.to);
-                  if (tagBlockData) {
-                    const tagStyleProps = extractStylePropsFromBlockData(tagBlockData);
-                    finalIconValue = tagStyleProps.iconValue;
-                  }
-                }
-              }
-
-              return {
-                blockId: refId,
-                aliasBlockId: blockIdNum, // 使用自身块ID
-                colorValue: blockStyleProps.colorValue,
-                iconValue: finalIconValue, // 优先使用自身图标，无图标时使用标签图标
-                colorSource: 'block' as const,
-                domColor: finalDomColor,
-                elementType: 'inline-ref' as const,
-                tagColors: [blockStyleProps.colorValue] // 单色情况
-              };
-            }
-
-            // 3. 如果自身块没有颜色，尝试从第一个有颜色的标签读取
-            if (!blockData?.refs || blockData.refs.length === 0) {
-              return null; // 没有引用信息，跳过
-            }
-
-            // 找到所有type=2的引用（标签）
-            const allTagRefs = blockData.refs.filter((ref: any) => ref.type === 2);
-            if (allTagRefs.length === 0) {
-              return null; // 没有标签引用，跳过
-            }
-
-            // 异步获取第一个有颜色的标签属性（标签块可能也不在 state 中）
-            let coloredTagProps: any[] = [];
-            for (const ref of allTagRefs) {
-              const tagBlockData = await getBlockDataAsync(ref.to);
-              if (!tagBlockData) continue;
-              const tagProps = extractStylePropsFromBlockData(tagBlockData);
-              if ((tagProps.colorEnabled && tagProps.colorValue) || (tagProps.iconEnabled && tagProps.iconValue)) {
-                coloredTagProps.push({ ...tagProps, blockId: ref.to });
-                break; // 只需要第一个
-              }
-            }
-
-            if (coloredTagProps.length === 0) {
-              return null; // 没有有颜色的标签，跳过
-            }
-
-            const firstColoredTagProps = coloredTagProps[0];
-            const aliasBlockId = firstColoredTagProps.blockId;
-
-            const finalDomColor = calculateDomColor(firstColoredTagProps.colorValue);
-
-            return {
-              blockId: refId,
-              aliasBlockId: aliasBlockId, // 使用标签块ID
-              colorValue: firstColoredTagProps.colorValue,
-              iconValue: firstColoredTagProps.iconValue, // 从标签读取图标
-              colorSource: 'tag' as const,
-              domColor: finalDomColor,
-              elementType: 'inline-ref' as const,
-              tagColors: [firstColoredTagProps.colorValue] // 单色情况
-            };
-          } catch (error) {
-            return null;
-          }
-        })();
-        
-        taggedBlocksPromises.push(promise);
+        taggedBlocksPromises.push(processInlineRefBlock(refId));
       }
     }
   });
@@ -2861,150 +3126,92 @@ async function processPanelBlocks(panelId: string, panelElement: Element) {
   
   // 只输出启用了颜色的容器块（包含块ID、标签名、别名块ID、颜色值、图标值和DOM颜色）
   if (taggedBlocks.length > 0) {
-    // 获取插件设置
-    const settings = orca.state.plugins[pluginName]?.settings;
-    const useDomColor = settings?.useDomColor ?? false;
-
-    // 优化：批量处理启用颜色的块，减少DOM查询次数
-    if (taggedBlocks.length > 0) {
-      // 预先计算所有需要的颜色值
-      const processedBlocks = taggedBlocks.map(block => {
-        if (!block.colorValue && !block.iconValue) return null;
-        
-        // 根据颜色来源和主题模式决定显示颜色（用于前景色）
-        let displayColor: string | null;
-        if (!block.colorValue) {
-          displayColor = null;
-        } else if (block.colorSource === 'block') {
-          displayColor = block.colorValue;
-        } else {
-          if (isDarkMode() && useDomColor) {
-            displayColor = block.domColor || block.colorValue;
-          } else {
-            displayColor = block.colorValue;
-          }
-        }
-        
-        return {
-          ...block,
-          displayColor,
-          bgColorValue: block.colorValue,
-          iconValue: block.iconValue
-        };
-      }).filter(Boolean);
-      
-      // 批量查询DOM元素，减少重复查询
-      const containerBlocks = processedBlocks.filter(block => block && block.elementType === 'container');
-      const inlineBlocks = processedBlocks.filter(block => block && block.elementType === 'inline-ref');
-      
-      // 批量处理容器块
-      if (containerBlocks.length > 0) {
-        const containerBlockIds = containerBlocks.map(block => block!.blockId);
-        const allContainerElements = new Map<string, NodeListOf<Element>>();
-        
-        // 一次性查询所有需要的容器块元素（包括镜像块）
-        containerBlockIds.forEach(blockId => {
-          if (!allContainerElements.has(blockId)) {
-            // 同时查询 data-id 和 data-mirror-id，以支持镜像块
-            const elements = panelElement.querySelectorAll(`[data-id="${blockId}"], [data-mirror-id="${blockId}"]`);
-            allContainerElements.set(blockId, elements);
-          }
-        });
-        
-        // 批量应用样式
-        containerBlocks.forEach(block => {
-          if (block) {
-            const blockElements = allContainerElements.get(block.blockId);
-            if (blockElements) {
-              blockElements.forEach(blockElement => {
-                // 关键优化：基于 blockId 注册样式配置，用于新插入元素的立即应用
-                const config = {
-                  displayColor: block.displayColor,
-                  bgColorValue: block.bgColorValue,
-                  iconValue: block.iconValue,
-                  tagColors: block.tagColors,
-                  colorSource: block.colorSource
-                };
-                
-                // 注册到原始块ID（这是块的数据ID，不是镜像块ID）
-                (unifiedObserver as any).registerStyleConfig(block.blockId, config);
-                
-                // 如果这个元素是镜像块，需要注册到镜像块的 data-id（用于查找镜像块）
-                const elementDataId = blockElement.getAttribute('data-id');
-                if (elementDataId && elementDataId !== block.blockId) {
-                  // 这是一个镜像块，用镜像块的 data-id 作为key
-                  (unifiedObserver as any).registerStyleConfig(elementDataId, config);
-                  debugLog(`注册镜像块样式: 镜像data-id=${elementDataId}, 原始blockId=${block.blockId}`);
-                }
-                
-                // 立即应用样式
-                if (block.tagColors && block.tagColors.length > 1) {
-                  applyMultiTagHandleColor(blockElement, block.displayColor, block.bgColorValue, block.iconValue, block.tagColors, block.colorSource);
-                } else {
-                  applyBlockHandleColor(blockElement, block.displayColor, block.bgColorValue, block.iconValue);
-                }
-                
-                // 观察折叠/展开状态变化
-                observeBlockHandleCollapse(blockElement, block.displayColor, block.bgColorValue, block.iconValue, block.tagColors, block.colorSource);
-              });
-            }
-          }
-        });
-        
-        debugLog(`已为 ${containerBlocks.length} 个容器块立即应用样式`);
-      }
-      
-      // 优化：批量处理内联引用块，减少DOM查询和循环开销
-      if (inlineBlocks.length > 0) {
-        // 预先收集所有需要查询的blockId
-        const inlineBlockIds = inlineBlocks.map(block => block!.blockId);
-        
-        // 优化：使用单个查询获取所有内联引用元素，然后按blockId分组
-        const allInlineElements = panelElement.querySelectorAll('.orca-inline[data-ref]');
-        const inlineElementsByBlockId = new Map<string, Element[]>();
-        
-        // 一次性遍历所有内联引用元素，按blockId分组
-        allInlineElements.forEach(element => {
-          const refId = element.getAttribute('data-ref');
-          if (refId && inlineBlockIds.includes(refId)) {
-            if (!inlineElementsByBlockId.has(refId)) {
-              inlineElementsByBlockId.set(refId, []);
-            }
-            inlineElementsByBlockId.get(refId)!.push(element);
-          }
-        });
-        
-        // 批量应用样式，减少循环次数
-        const styleOperations: Array<{
-          element: Element;
-          displayColor: string | null;
-          tagColors: string[];
-          colorSource: 'block' | 'tag';
-        }> = [];
-        
-        inlineBlocks.forEach(block => {
-          if (block) {
-            const elements = inlineElementsByBlockId.get(block.blockId);
-            if (elements) {
-              elements.forEach(element => {
-                styleOperations.push({
-                  element,
-                  displayColor: block.displayColor,
-                  tagColors: block.tagColors,
-                  colorSource: block.colorSource
-                });
-              });
-            }
-          }
-        });
-        
-        // 批量执行样式应用
-        styleOperations.forEach(({ element, displayColor, tagColors, colorSource }) => {
-          applyInlineRefColor(element, displayColor, tagColors, colorSource);
-        });
-      }
-    }
+    applyProcessedBlocks(panelElement, getProcessedBlocks(taggedBlocks));
   }
+}
+
+async function refreshBlocksByIds(blockIds: Iterable<string>): Promise<boolean> {
+  const targetIds = Array.from(new Set(Array.from(blockIds).filter(Boolean)));
+  if (targetIds.length === 0) return true;
+
+  const panels = collectViewPanels(orca.state.panels);
+  const panelEntries: Array<{ panelId: string; panelElement: Element }> = [];
+
+  panels.forEach(panel => {
+    const panelElement = domCache.getPanelElement(panel.id);
+    if (panelElement) {
+      panelEntries.push({ panelId: panel.id, panelElement });
+    }
+  });
+
+  ['_globalSearch', '_reference'].forEach(panelId => {
+    const panelElement = domCache.getPanelElement(panelId);
+    if (panelElement) {
+      panelEntries.push({ panelId, panelElement });
+    }
+  });
+
+  if (panelEntries.length === 0) return false;
+
+  const expandedIds = new Set(targetIds);
+
+  targetIds.forEach(rawId => {
+    const numericId = Number(rawId);
+    if (Number.isFinite(numericId)) {
+      blockStyleCache.invalidate(numericId);
+      fetchedBlockCache.delete(numericId);
+    }
+
+    const dependentBlocks = Number.isFinite(numericId) ? styleDependencyIndex.getDependentBlocks(numericId) : [];
+    dependentBlocks.forEach(dependentId => expandedIds.add(dependentId));
+  });
+
+  const uniqueTargetIds = Array.from(expandedIds);
+  const taggedBlocksPromises: Promise<TaggedBlockInfo | null>[] = [];
+  const matchedIds = new Set<string>();
+
+  for (const { panelId, panelElement } of panelEntries) {
+    uniqueTargetIds.forEach(blockId => {
+      const containerElements = panelElement.querySelectorAll(`[data-id="${blockId}"], [data-mirror-id="${blockId}"]`);
+      containerElements.forEach(element => {
+        matchedIds.add(blockId);
+        cleanupBlockStyles(element);
+        taggedBlocksPromises.push(processSingleContainerElement(element, panelId));
+      });
+
+      const inlineElements = panelElement.querySelectorAll(`.orca-inline[data-ref="${blockId}"]`);
+      if (inlineElements.length > 0) {
+        matchedIds.add(blockId);
+        inlineElements.forEach(element => {
+          const contentElement = element.querySelector('.orca-inline-r-content');
+          if (contentElement instanceof HTMLElement) {
+            contentElement.style.removeProperty('color');
+            contentElement.style.removeProperty('border-bottom-color');
+          }
+        });
+        taggedBlocksPromises.push(processInlineRefBlock(blockId));
+      }
+    });
+  }
+
+  if (matchedIds.size === 0) {
+    return false;
+  }
+
+  const results = await Promise.all(taggedBlocksPromises);
+  const taggedBlocks = results.filter((item): item is TaggedBlockInfo => item !== null);
+
+  panelEntries.forEach(({ panelElement }) => {
+    applyProcessedBlocks(panelElement, getProcessedBlocks(taggedBlocks));
+  });
+
+  debugLog(`增量刷新完成`, {
+    目标块数量: uniqueTargetIds.length,
+    命中块数量: matchedIds.size,
+    应用样式数量: taggedBlocks.length
+  });
+
+  return true;
 }
 
 /**
@@ -3020,6 +3227,8 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
   
   // 清理所有之前的观察元素
   unifiedObserver.clearAllObservedElements();
+  unifiedObserver.clearStyleConfigCache();
+  styleDependencyIndex.clear();
   
   // 处理普通面板
   for (const panel of viewPanels) {
@@ -3045,6 +3254,8 @@ async function readAllPanelsContainerBlocks(viewPanels: any[]) {
     debugLog(`处理特殊面板: ${panelId}`);
     await processPanelBlocks(panelId, panelElement);
   }
+
+  blockChangeTracker.reset();
 }
 
 export async function load(_name: string) {
@@ -3078,6 +3289,7 @@ export async function load(_name: string) {
   // 启动定期清理任务（每5分钟清理一次过期缓存和失效DOM引用）
   cleanupInterval = setInterval(() => {
     dataCache.cleanupExpiredCache();
+    blockStyleCache.cleanupExpired();
     domCache.cleanupInvalidReferences(); // 添加DOM引用清理
     unifiedObserver.cleanupInvalidStyleReferences(); // 添加样式检测引用清理
     visibilityObserver.cleanupInvalidElements(); // 添加可见性观察器清理
@@ -3105,6 +3317,11 @@ export async function load(_name: string) {
   if (window.Valtio?.subscribe) {
     // 保存上一次的设置值，用于检测变化
     let lastEnableTagValueColor = settings?.enableTagValueColor ?? false;
+    let lastStyleSettingsSignature = JSON.stringify({
+      useDomColor: settings?.useDomColor ?? false,
+      enableInlineColor: settings?.enableInlineColor ?? false,
+      enableTitleColor: settings?.enableTitleColor ?? true
+    });
     
     unsubscribe = window.Valtio.subscribe(orca.state, () => {
       // 检查标签值颜色设置变化
@@ -3124,9 +3341,23 @@ export async function load(_name: string) {
         }
         lastEnableTagValueColor = enableTagValueColor;
       }
+
+      const styleSettingsSignature = JSON.stringify({
+        useDomColor: currentSettings?.useDomColor ?? false,
+        enableInlineColor: currentSettings?.enableInlineColor ?? false,
+        enableTitleColor: currentSettings?.enableTitleColor ?? true
+      });
+
+      if (styleSettingsSignature !== lastStyleSettingsSignature) {
+        lastStyleSettingsSignature = styleSettingsSignature;
+        blockStyleCache.clear();
+        debounceGetPanelBlockIds();
+        return;
+      }
       
       // 使用防抖函数，避免频繁触发
-      debounceGetPanelBlockIds();
+      const changedBlockIds = blockChangeTracker.collectChangedBlocks();
+      debounceGetPanelBlockIds(changedBlockIds);
     });
   }
 }
@@ -3149,6 +3380,10 @@ export async function unload() {
   // 清理所有缓存
   dataCache.clearAllCache();
   domCache.clearAllCache();
+  blockStyleCache.clear();
+  styleDependencyIndex.clear();
+  blockChangeTracker.clear();
+  unifiedObserver.clearStyleConfigCache();
   fetchedBlockCache.clear();
   pendingBlockRequests.clear();
   
