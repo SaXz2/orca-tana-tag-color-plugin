@@ -2101,6 +2101,20 @@ function generateMultiColorBackground(tagColors: string[]): string {
 }
 
 /**
+ * 检查元素是否有 Tana 原生的 ti 图标类（非插件设置的）
+ * Tana 用 ti ti-point-filled 等类来渲染句柄图标
+ */
+function hasTanaNativeIcon(element: HTMLElement): boolean {
+  const classes = element.classList;
+  for (let i = 0; i < classes.length; i++) {
+    if (classes[i] === 'ti' || classes[i].startsWith('ti-')) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * 应用图标到元素（统一的图标处理逻辑）
  * @param element 目标元素
  * @param iconValue 图标值
@@ -2108,21 +2122,15 @@ function generateMultiColorBackground(tagColors: string[]): string {
  */
 function applyIconToElement(element: HTMLElement, iconValue: string | null, context?: string) {
   if (!iconValue) {
-    element.removeAttribute('data-icon');
-    const existingClasses = Array.from(element.classList);
-    existingClasses.forEach(cls => {
-      if (cls === 'ti' || cls.startsWith('ti-')) {
-        element.classList.remove(cls);
-      }
-    });
-    debugLog(`${context || '元素'}没有图标值，已清理旧图标`);
+    // 不需要设置图标时完全不碰元素，保留 Tana 原生的 ti 类、data-icon 等
+    // Tana 用 ti ti-point-filled 等类渲染句柄图标，删除它们会导致 ::before 消失
     return;
   }
   
   // 检查是否为 Tabler Icons 格式（以 "ti " 开头）
   if (iconValue.startsWith('ti ')) {
     const iconClasses = iconValue.split(' ').filter(cls => cls.trim() !== '');
-    element.removeAttribute('data-icon');
+    // 保留 Tana 原生的 data-icon 属性作为回退，不删除
     
     // 移除所有现有的 Tabler Icons 类（包括 ti、ti- 开头的所有类）
     const existingClasses = Array.from(element.classList);
@@ -2210,11 +2218,17 @@ function applyMultiTagHandleColor(blockElement: Element, displayColor: string | 
             const bgColor = hexToRgba(tagColors[0], 0.45);
             handleElement.style.setProperty('background-color', bgColor, 'important');
             handleElement.style.removeProperty('background-image');
+            if (!hasTanaNativeIcon(handleElement)) {
+              handleElement.classList.remove('orca-block-handle-colored');
+            }
           } else {
             // 没有折叠类时，清除背景颜色
             handleElement.style.removeProperty('background-color');
-            handleElement.style.removeProperty('background-image');
             // 确保非折叠状态下完全不透明
+            // 只在没有 Tana 原生图标类且非展开状态时移除 -colored
+            if (!hasTanaNativeIcon(handleElement) && !handleElement.classList.contains('orca-block-handle-expanded')) {
+              handleElement.classList.remove('orca-block-handle-colored');
+            }
             handleElement.style.setProperty('opacity', '1', 'important');
           }
         } else if (tagColors.length > 1) {
@@ -2230,13 +2244,17 @@ function applyMultiTagHandleColor(blockElement: Element, displayColor: string | 
           } else {
             // 清除背景样式
             handleElement.style.removeProperty('background-color');
-            handleElement.style.removeProperty('background-image');
           }
           // 确保完全不透明
+          if (!hasTanaNativeIcon(handleElement)) {
+            handleElement.classList.remove('orca-block-handle-colored');
+          }
           handleElement.style.setProperty('opacity', '1', 'important');
         } else {
           handleElement.style.removeProperty('background-color');
-          handleElement.style.removeProperty('background-image');
+          if (!hasTanaNativeIcon(handleElement) && !handleElement.classList.contains('orca-block-handle-expanded')) {
+            handleElement.classList.remove('orca-block-handle-colored');
+          }
           handleElement.style.setProperty('opacity', '1', 'important');
         }
       }
@@ -2345,9 +2363,16 @@ function applyHandleStyle(handleElement: HTMLElement, displayColor: string | nul
     const bgColor = hexToRgba(bgColorValue, 0.45);
     handleElement.style.setProperty('background-color', bgColor, 'important');
     handleElement.style.removeProperty('background-image');
+    // 只在没有 Tana 原生 ti 图标类时才移除 -colored（否则 Tana 用 ti 图标渲染，-colored 是正常的）
+    if (!hasTanaNativeIcon(handleElement)) {
+      handleElement.classList.remove('orca-block-handle-colored');
+    }
   } else {
     handleElement.style.removeProperty('background-color');
-    handleElement.style.removeProperty('background-image');
+    // 只在没有 Tana 原生 ti 图标类且非展开状态时移除 -colored
+    if (!hasTanaNativeIcon(handleElement) && !handleElement.classList.contains('orca-block-handle-expanded')) {
+      handleElement.classList.remove('orca-block-handle-colored');
+    }
     handleElement.style.setProperty('opacity', '1', 'important');
   }
 }
@@ -2648,7 +2673,7 @@ function cleanupBlockStyles(blockElement: Element) {
         handleElement.style.removeProperty('color');
         handleElement.style.removeProperty('background-color');
         handleElement.style.removeProperty('background-image');
-        handleElement.removeAttribute('data-icon');
+        // 不删除 data-icon，保留 Tana 原生属性
       }
     }
   });

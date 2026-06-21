@@ -25,3 +25,14 @@
         color: unset;
     }
 }
+
+/* 修复：Tana 为 orca-block-handle-colored 设置 ::before { content: none } 并依赖内联 background-image 渲染彩色圆点。
+   插件移除内联 background-image 后 ::before 仍被隐藏导致句柄不可见。
+   此处用 !important 覆盖 Tana 的 background-image（非 !important 的内联样式可被 !important 样式表覆盖），
+   并强制恢复 ::before 伪元素显示。 */
+.orca-block-handle-colored:not(.orca-block-handle-collapsed):not(.orca-block-handle-expanded) {
+    background-image: none !important;
+    background-color: transparent !important;
+    opacity: 1 !important;
+}
+
